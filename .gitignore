@@ -1,0 +1,20 @@
+# Virtual environment
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Pytest cache
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS files
+.DS_Store
