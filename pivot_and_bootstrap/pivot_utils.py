@@ -1,3 +1,26 @@
+"""
+Pivot Utilities for Taxi Data Processing
+
+This module provides core utilities for the Taxi Data Pivoting Pipeline:
+- Part 1: Column detection, month inference, pivoting, and row cleanup (20 pts)
+- Part 2: S3 & File Discovery utilities (15 pts)
+
+The pipeline processes NYC TLC taxi trip Parquet data, pivoting trip-level records
+into (date × taxi_type × pickup_place × hour) counts.
+"""
+
+import os
+import re
+import logging
+from pathlib import Path
+from typing import List, Optional, Dict, Any, Union, Tuple
+
+import pandas as pd
+from urllib.parse import urlparse
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
 # for all NYC TLC data
 import dask.dataframe as dd
 import pandas as pd
@@ -5,10 +28,7 @@ import numpy as np
 from pathlib import Path
 import glob
 import re
-import os
-import logging
-from typing import List, Optional, Dict, Any, Union
-from urllib.parse import urlparse
+from typing import Optional
 
 """
 Core utilities for pivoting NYC TLC taxi trip data.
@@ -26,6 +46,13 @@ PICKUP_DATETIME_VARIANTS = [
     "tpep_pickup_datetime",   # Yellow taxi
     "lpep_pickup_datetime",   # Green taxi
     "pickup_datetime",
+    "pickupdatetime",
+    "pick_up_datetime",
+    "trip_pickup_datetime",
+    "start_datetime",
+    "pickup_date",
+    "pickup_date_time",
+    "request_datetime",
 ]
 
 PICKUP_LOCATION_VARIANTS = [
@@ -71,6 +98,7 @@ def find_pickup_datetime_col(columns: list) -> Optional[str]:
 
     Handles common NYC TLC variants: tpep_pickup_datetime (yellow),
     lpep_pickup_datetime (green), pickup_datetime. Matching is case-insensitive.
+    Fallback: any column whose name contains 'pickup' and ('datetime' or 'date' or 'time').
 
     Parameters
     ----------
@@ -82,7 +110,15 @@ def find_pickup_datetime_col(columns: list) -> Optional[str]:
     str or None
         The actual column name if found, else None.
     """
-    return _match_column(columns, PICKUP_DATETIME_VARIANTS)
+    found = _match_column(columns, PICKUP_DATETIME_VARIANTS)
+    if found is not None:
+        return found
+    # Fallback: column containing 'pickup' and ('datetime' or 'date' or 'time')
+    for c in columns:
+        n = _normalize_col_candidate(c)
+        if "pickup" in n and ("datetime" in n or "date" in n or "time" in n):
+            return c
+    return None
 
 
 def find_pickup_location_col(columns: list) -> Optional[str]:
@@ -91,6 +127,7 @@ def find_pickup_location_col(columns: list) -> Optional[str]:
 
     Handles common variants: PULocationID, pickup_location_id, pu_location_id,
     pickup_location. Matching is case-insensitive.
+    Fallback: any column whose name contains 'pickup' and ('location' or 'zone' or 'borough').
 
     Parameters
     ----------
@@ -102,7 +139,14 @@ def find_pickup_location_col(columns: list) -> Optional[str]:
     str or None
         The actual column name if found, else None.
     """
-    return _match_column(columns, PICKUP_LOCATION_VARIANTS)
+    found = _match_column(columns, PICKUP_LOCATION_VARIANTS)
+    if found is not None:
+        return found
+    for c in columns:
+        n = _normalize_col_candidate(c)
+        if "pickup" in n and ("location" in n or "zone" in n or "borough" in n):
+            return c
+    return None
 
 
 def infer_taxi_type_from_path(file_path: str) -> Optional[str]:
@@ -163,32 +207,52 @@ def infer_month_from_path(file_path: str) -> Optional[tuple[int, int]]:
     return None
 
 
-def pivot_counts_date_taxi_type_location(pdf: pd.DataFrame) -> pd.DataFrame:
+def pivot_counts_date_taxi_type_location(
+    pdf: pd.DataFrame,
+    taxi_type: Optional[str] = None,
+    datetime_col: Optional[str] = None,
+    location_col: Optional[str] = None,
+) -> pd.DataFrame:
     """
-    Pivot aggregated counts to wide form: (taxi_type, date, pickup_place) index,
-    columns hour_0..hour_23, missing filled with 0.
+    Pivot to wide form: (taxi_type, date, pickup_place) index, columns hour_0..hour_23.
 
-    Expects pdf to have columns: taxi_type, date, pickup_place, hour, and a count
-    column (e.g. 'count' or 'rides'). If multiple count columns exist, one named
-    'count' or 'rides' is used; otherwise the last numeric column is used.
-
-    Parameters
-    ----------
-    pdf : pandas.DataFrame
-        Long-format dataframe with at least: taxi_type, date, pickup_place, hour, and counts.
+    Can be called in two ways:
+    1. Raw trip data: pass taxi_type=, datetime_col=, location_col=. Builds aggregated
+       long table with a single groupby (fast), then pivots.
+    2. Pre-aggregated long table: pdf has taxi_type, date, pickup_place, hour, and a
+       count column; leave taxi_type/datetime_col/location_col as None.
 
     Returns
     -------
     pandas.DataFrame
-        Index: (taxi_type, date, pickup_place). Columns: hour_0..hour_23. Values: counts (0 where missing).
+        Columns: taxi_type, date, pickup_place, hour_0..hour_23. Values: counts (0 where missing).
     """
+    if taxi_type is not None and datetime_col is not None and location_col is not None:
+        # Fast path: build aggregated long table from raw trip data with one groupby
+        dt = pdf[datetime_col]
+        if not pd.api.types.is_datetime64_any_dtype(dt):
+            dt = pd.to_datetime(dt, errors="coerce")
+        work = pd.DataFrame(
+            {
+                "taxi_type": taxi_type,
+                "date": dt.dt.date,
+                "pickup_place": pdf[location_col].astype(str),
+                "hour": dt.dt.hour,
+            },
+            copy=False,
+        )
+        long = work.groupby(["taxi_type", "date", "pickup_place", "hour"], as_index=False).size()
+        # pandas may name the size column 0 or "size"
+        if "count" not in long.columns:
+            long = long.rename(columns={long.columns[-1]: "count"})
+        pdf = long
+
     required = {"taxi_type", "date", "pickup_place", "hour"}
     cols = set(pdf.columns)
     if not required.issubset(cols):
         missing = required - cols
         raise ValueError(f"DataFrame must have columns {required}; missing: {missing}")
 
-    # Identify count column
     count_col = None
     for c in ("count", "rides", "n"):
         if c in pdf.columns and pd.api.types.is_numeric_dtype(pdf[c]):
@@ -201,7 +265,6 @@ def pivot_counts_date_taxi_type_location(pdf: pd.DataFrame) -> pd.DataFrame:
         else:
             raise ValueError("No numeric count column found (looked for 'count', 'rides', 'n')")
 
-    # Pivot: rows = (taxi_type, date, pickup_place), columns = hour, values = count_col
     piv = pdf.pivot_table(
         index=["taxi_type", "date", "pickup_place"],
         columns="hour",
@@ -210,7 +273,6 @@ def pivot_counts_date_taxi_type_location(pdf: pd.DataFrame) -> pd.DataFrame:
         fill_value=0,
     )
 
-    # Rename hour columns to hour_0..hour_23 and ensure all 0..23 present
     hour_cols = [f"hour_{h}" for h in range(24)]
     for h in range(24):
         if h not in piv.columns:
@@ -258,23 +320,14 @@ def cleanup_low_count_rows(
         "rows_before": rows_before,
         "rows_after": rows_after,
         "rows_dropped": rows_dropped,
+        "rows_removed": rows_dropped,
         "rides_dropped": rides_dropped,
     }
     return cleaned, stats
 
-
-"""
-S3 & File Discovery Utilities
-
-This module provides utilities for working with both local and S3 file systems,
-including path detection, filesystem abstraction, and recursive parquet file discovery.
-
-Part 2 of the Taxi Data Pivoting Pipeline (15 pts)
-"""
-
-
-# Configure logging
-logger = logging.getLogger(__name__)
+# =============================================================================
+# Part 2: S3 & File Discovery Utilities (15 pts)
+# =============================================================================
 
 
 def is_s3_path(path: str) -> bool:

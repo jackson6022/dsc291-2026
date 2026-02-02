@@ -248,6 +248,10 @@ def find_optimal_partition_size(
             if r > 0:
                 candidates.append(r)
 
+    # Sort ascending so we can early-exit when a candidate exceeds memory
+    # (larger batch sizes will also exceed)
+    candidates = sorted(set(candidates))
+
     logger.info(
         "Testing %d partition candidates (rows: %s) on %s",
         len(candidates),
@@ -275,15 +279,15 @@ def find_optimal_partition_size(
             )
             continue
 
-        # Reject if over memory limit
+        # Reject if over memory limit; early exit since larger batches will also exceed
         if peak_rss > max_memory_usage_mb:
             logger.debug(
-                "Rejecting batch_rows=%d: peak_rss=%.1f MB > max=%.1f MB",
+                "Rejecting batch_rows=%d: peak_rss=%.1f MB > max=%.1f MB (skipping larger candidates)",
                 batch_rows,
                 peak_rss,
                 max_memory_usage_mb,
             )
-            continue
+            break
 
         # Prefer faster (lower elapsed time)
         if elapsed < best_time:

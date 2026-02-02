@@ -1,20 +1,63 @@
-# Virtual environment
-venv/
-.venv/
-
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.pyc
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Pytest cache
-.pytest_cache/
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
 
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
 
-# OS files
+# OS
 .DS_Store
+Thumbs.db
+
+# Project: pipeline outputs and intermediates
+out/
+pivot_and_bootstrap/out/
+pivot_and_bootstrap/intermediates/
+pivot_and_bootstrap/*.parquet
+report.json
+report.tex
+*.parquet
+
+# Jupyter
+.ipynb_checkpoints/
+.jupyter/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Local / secrets
+.env
+.env.local
+*.pem
