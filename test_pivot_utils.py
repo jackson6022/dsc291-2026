@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
 # Import the module to test
-from s3_utils import (
+from pivot_utils import (
     is_s3_path,
     parse_s3_path,
     get_storage_options,
@@ -243,7 +243,7 @@ class TestDiscoverParquetFiles:
         with pytest.raises(FileNotFoundError):
             discover_parquet_files('/nonexistent/path/12345')
     
-    @patch('s3_utils._discover_s3_parquet_files')
+    @patch('pivot_utils._discover_s3_parquet_files')
     def test_s3_discovery_calls_s3_function(self, mock_s3_discover):
         """Test that S3 paths use S3 discovery."""
         mock_s3_discover.return_value = ['s3://bucket/file.parquet']

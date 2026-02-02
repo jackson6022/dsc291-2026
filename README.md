@@ -9,10 +9,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 2. Run tests
-python3 -m pytest test_s3_utils.py -v
+python3 -m pytest test_pivot_utils.py -v
 
 # 3. Use the module
-python3 -c "from s3_utils import discover_parquet_files; print(discover_parquet_files('.'))"
+python3 -c "from pivot_utils import discover_parquet_files; print(discover_parquet_files('.'))"
 ```
 
 ---
@@ -22,7 +22,7 @@ python3 -c "from s3_utils import discover_parquet_files; print(discover_parquet_
 This module finds parquet files from **local folders** or **Amazon S3 buckets** using a single function.
 
 ```python
-from s3_utils import discover_parquet_files
+from pivot_utils import discover_parquet_files
 
 # Works with local paths
 files = discover_parquet_files('/data/taxi/')
@@ -47,10 +47,10 @@ From `HOMEWORK_ASSIGNMENT_1.md`:
 
 | Required Function | Implemented | Location |
 |-------------------|-------------|----------|
-| `is_s3_path` | ✅ | `s3_utils.py` line 20 |
-| `get_storage_options` | ✅ | `s3_utils.py` line 78 |
-| `get_filesystem` | ✅ | `s3_utils.py` line 114 |
-| `discover_parquet_files` | ✅ | `s3_utils.py` line 243 |
+| `is_s3_path` | ✅ | `pivot_utils.py` line 20 |
+| `get_storage_options` | ✅ | `pivot_utils.py` line 78 |
+| `get_filesystem` | ✅ | `pivot_utils.py` line 114 |
+| `discover_parquet_files` | ✅ | `pivot_utils.py` line 243 |
 
 ---
 
@@ -58,8 +58,8 @@ From `HOMEWORK_ASSIGNMENT_1.md`:
 
 | File | Purpose |
 |------|---------|
-| `s3_utils.py` | Main module with all Part 2 functions |
-| `test_s3_utils.py` | 34 pytest tests for s3_utils |
+| `pivot_utils.py` | Main module with all Part 2 functions |
+| `test_pivot_utils.py` | 34 pytest tests for pivot_utils |
 | `requirements.txt` | Python dependencies |
 
 ---
@@ -103,13 +103,13 @@ files = discover_parquet_files('s3://nyc-tlc/trip data/', anon=True)
 
 ```bash
 # All tests
-python3 -m pytest test_s3_utils.py -v
+python3 -m pytest test_pivot_utils.py -v
 
 # Specific test class
-python3 -m pytest test_s3_utils.py::TestDiscoverParquetFiles -v
+python3 -m pytest test_pivot_utils.py::TestDiscoverParquetFiles -v
 
 # With coverage
-python3 -m pytest test_s3_utils.py --cov=s3_utils
+python3 -m pytest test_pivot_utils.py --cov=pivot_utils
 ```
 
 **Expected output**: 34 passed
@@ -121,7 +121,7 @@ python3 -m pytest test_s3_utils.py --cov=s3_utils
 Import the functions in their code:
 
 ```python
-from s3_utils import discover_parquet_files, is_s3_path, get_filesystem
+from pivot_utils import discover_parquet_files, is_s3_path, get_filesystem
 
 # In the main pipeline
 def main(input_dir):
