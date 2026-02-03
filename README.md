@@ -1,147 +1,57 @@
 # DSC 291 - Part 2: S3 & File Discovery
 
-## Quick Start
+## What Part 2 Asks For
 
-```bash
-# 1. Setup
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+From the assignment:
 
-# 2. Run tests
-python3 -m pytest test_pivot_utils.py -v
-
-# 3. Use the module
-python3 -c "from pivot_utils import discover_parquet_files; print(discover_parquet_files('.'))"
-```
+- **Path helpers**: `is_s3_path`, `get_storage_options`, `get_filesystem` — tell S3 from local paths, get storage config and a filesystem object (e.g. `s3fs` for S3, anonymous when needed).
+- **Discovery**: `discover_parquet_files(input_path)` — one function that recursively finds all `.parquet` files for a given path and returns a **sorted list**, whether the path is **local or S3**.
 
 ---
 
 ## What This Code Does
 
-This module finds parquet files from **local folders** or **Amazon S3 buckets** using a single function.
+The code in `pivot_and_bootstrap/pivot_utils.py` implements that: it discovers parquet files from either the local filesystem or an S3 bucket using the same API.
 
-```python
-from pivot_utils import discover_parquet_files
+- **Path helpers**  
+  `is_s3_path` detects `s3://` or `s3a://`. `get_storage_options` returns options (e.g. `anon=True` for public S3). `get_filesystem` returns `s3fs.S3FileSystem` for S3 or the local filesystem for disk paths.
 
-# Works with local paths
-files = discover_parquet_files('/data/taxi/')
-
-# Works with S3 paths
-files = discover_parquet_files('s3://nyc-tlc/trip data/', anon=True)
-```
-
-Both return a **sorted list** of all `.parquet` file paths found recursively.
+- **Discovery**  
+  `discover_parquet_files(input_path)` walks the path recursively (local: `rglob`, S3: `fs.find`), keeps only `.parquet` paths, sorts them, and returns the list. Same call works for `/data/taxi/` or `s3://bucket/prefix/`.
 
 ---
 
-## Assignment Requirements (Part 2)
+## How It Is Used in the Pipeline
 
-From `HOMEWORK_ASSIGNMENT_1.md`:
+Pipeline step 1 is **“Discover Parquet files (local dir or s3://...)”**. Part 2 is that step.
 
-> **Part 2: S3 & File Discovery (15 pts)**
-> - **Path helpers**: `is_s3_path`, `get_storage_options`, `get_filesystem`
-> - **Discovery**: `discover_parquet_files(input_path)` — recursive, local or S3, sorted `.parquet` list
+The main pipeline (e.g. Part 4’s `pivot_all_files.py`) will:
 
-### Implementation Status
+1. Take an input path from the user (`--input-dir`), which may be local or S3.
+2. Call `discover_parquet_files(input_path)` once to get the full list of parquet files.
+3. Use that list for the rest of the pipeline: group by month, process each file (read → normalize → aggregate → pivot → cleanup), then combine into the final wide table.
 
-| Required Function | Implemented | Location |
-|-------------------|-------------|----------|
-| `is_s3_path` | ✅ | `pivot_utils.py` line 20 |
-| `get_storage_options` | ✅ | `pivot_utils.py` line 78 |
-| `get_filesystem` | ✅ | `pivot_utils.py` line 114 |
-| `discover_parquet_files` | ✅ | `pivot_utils.py` line 243 |
+So Part 2 is the **file-discovery layer**: it hides whether data lives on disk or S3 and gives the rest of the pipeline a single, sorted list of parquet paths to process.
 
 ---
 
-## Files
-
-| File | Purpose |
-|------|---------|
-| `pivot_utils.py` | Main module with all Part 2 functions |
-| `test_pivot_utils.py` | 34 pytest tests for pivot_utils |
-| `requirements.txt` | Python dependencies |
-
----
-
-## Functions Reference
-
-### `is_s3_path(path)`
-Returns `True` if path starts with `s3://` or `s3a://`.
-```python
-is_s3_path('s3://bucket/data')  # True
-is_s3_path('/local/path')       # False
-```
-
-### `get_storage_options(path, anon=None)`
-Returns storage options dict for pandas/pyarrow.
-```python
-get_storage_options('s3://bucket/path')  # {'anon': True}
-get_storage_options('/local/path')       # {}
-```
-
-### `get_filesystem(path, anon=None)`
-Returns filesystem object for the path type.
-```python
-fs = get_filesystem('s3://bucket/path')  # s3fs.S3FileSystem
-fs = get_filesystem('/local/path')       # LocalFileSystem
-```
-
-### `discover_parquet_files(input_path, anon=None)`
-Recursively finds all `.parquet` files. Returns sorted list.
-```python
-files = discover_parquet_files('/data/')
-# ['/data/file1.parquet', '/data/subdir/file2.parquet']
-
-files = discover_parquet_files('s3://nyc-tlc/trip data/', anon=True)
-# ['s3://nyc-tlc/trip data/yellow_2023-01.parquet', ...]
-```
-
----
-
-## Running Tests
+## Quick Usage
 
 ```bash
-# All tests
-python3 -m pytest test_pivot_utils.py -v
+# Setup
+pip install -r requirements.txt
 
-# Specific test class
-python3 -m pytest test_pivot_utils.py::TestDiscoverParquetFiles -v
-
-# With coverage
-python3 -m pytest test_pivot_utils.py --cov=pivot_utils
+# Run tests
+python3 -m pytest pivot_and_bootstrap/test_pivot_utils.py -v
 ```
-
-**Expected output**: 34 passed
-
----
-
-## How Person 4 Can Use This
-
-Import the functions in their code:
 
 ```python
-from pivot_utils import discover_parquet_files, is_s3_path, get_filesystem
+from pivot_and_bootstrap import discover_parquet_files
 
-# In the main pipeline
-def main(input_dir):
-    files = discover_parquet_files(input_dir)
-    for file in files:
-        # process each parquet file
-        pass
+# Local or S3 — same call
+files = discover_parquet_files('/data/taxi/')
+files = discover_parquet_files('s3://nyc-tlc/trip data/', anon=True)
+# → sorted list of .parquet paths
 ```
 
----
-
-## Dependencies
-
-```
-pandas>=2.0.0
-pyarrow>=14.0.0
-s3fs>=2024.2.0
-fsspec>=2024.2.0
-boto3>=1.34.0
-pytest>=7.4.0
-```
-
-Install with: `pip install -r requirements.txt`
+**Files**: `pivot_and_bootstrap/pivot_utils.py` (implementation), `pivot_and_bootstrap/test_pivot_utils.py` (tests).
