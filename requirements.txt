@@ -1,0 +1,21 @@
+# Core dependencies for Taxi Data Pivoting Pipeline
+pandas>=2.0.0
+pyarrow>=14.0.0
+numpy>=1.24.0
+
+# S3/Cloud storage
+s3fs>=2024.2.0
+fsspec>=2024.2.0
+boto3>=1.34.0
+
+# CLI and utilities
+tqdm>=4.66.0
+click>=8.1.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Memory profiling
+memory-profiler>=0.61.0
+psutil>=5.9.0
