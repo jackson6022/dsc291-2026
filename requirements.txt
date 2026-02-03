@@ -14,5 +14,8 @@ dask[dataframe]>=2024.1.0
 # CLI and progress
 tqdm>=4.66.0
 
+# Fallback for Parquet codec issues (e.g. GZipCodec failed); optional
+fastparquet>=2024.1.0
+
 # Testing (optional)
 pytest>=7.4.0

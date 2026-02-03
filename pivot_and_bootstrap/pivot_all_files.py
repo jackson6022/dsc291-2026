@@ -35,6 +35,7 @@ from pivot_and_bootstrap.pivot_utils import (
     discover_parquet_files,
     find_pickup_datetime_col,
     find_pickup_location_col,
+    get_file_size,
     get_storage_options,
     infer_month_from_path,
     infer_taxi_type_from_path,
@@ -54,6 +55,8 @@ CANONICAL_LOCATION_COL = "pickup_location"
 # -----------------------------------------------------------------------------
 DEFAULT_INPUT_DIR = "s3://dsc291-ucsd/taxi"
 DEFAULT_OUTPUT_DIR = "./pivot_and_bootstrap"
+# S3 upload for wide table (e.g. on EC2). Set env DSC291_S3_OUTPUT or use --s3-output.
+DEFAULT_S3_OUTPUT = "s3://291-s3-bucket/wide.parquet"
 
 
 def _get_peak_rss_bytes() -> int:
@@ -96,6 +99,15 @@ def _read_parquet_schema(file_path: str, anon: Optional[bool] = None) -> List[st
     return list(meta.schema.names)
 
 
+def _path_suggests_older_parquet(file_path: str) -> bool:
+    """True if path looks like older NYC TLC data (2009-2014) which often needs fastparquet."""
+    path = (file_path or "").lower()
+    for y in ("2009", "2010", "2011", "2012", "2013", "2014"):
+        if y in path:
+            return True
+    return False
+
+
 def read_parquet_file(
     file_path: str,
     anon: Optional[bool] = None,
@@ -103,29 +115,78 @@ def read_parquet_file(
 ) -> pd.DataFrame:
     """
     Read a single Parquet file from local path or S3.
+    For older-year paths (2009-2014) tries fastparquet first; else PyArrow first (with retries), then fastparquet.
 
     Args:
         file_path: Local path or s3:// URI to a Parquet file.
         anon: For S3, use anonymous access if True; if False, use AWS credentials.
-              None uses default (anonymous). Set False for nyc-tlc and similar buckets.
         columns: If provided, read only these columns (faster, less memory).
 
     Returns:
         DataFrame with the file contents.
 
     Raises:
-        FileNotFoundError: If local file does not exist.
-        Exception: On read or schema errors.
+        Exception: On read or schema errors after all attempts.
     """
     storage_options = (
         get_storage_options(file_path, anon=anon) if is_s3_path(file_path) else {}
     )
-    return pd.read_parquet(
-        file_path,
-        storage_options=storage_options or None,
-        columns=columns,
-        engine="pyarrow",
-    )
+    last_error: Optional[Exception] = None
+    try_fastparquet_first = _path_suggests_older_parquet(file_path)
+
+    def _read(engine: str, cols: Optional[List[str]] = None) -> pd.DataFrame:
+        return pd.read_parquet(
+            file_path,
+            storage_options=storage_options or None,
+            columns=cols or columns,
+            engine=engine,
+        )
+
+    # For older paths, try fastparquet first (handles legacy codec better)
+    if try_fastparquet_first:
+        try:
+            import fastparquet  # noqa: F401
+            return _read("fastparquet")
+        except ImportError:
+            pass
+        except Exception as e:
+            last_error = e
+
+    # PyArrow with retries (transient S3/network)
+    for attempt in range(3):
+        try:
+            return _read("pyarrow")
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(1.0 * (attempt + 1))
+            continue
+
+    # Fastparquet fallback (or retry for older paths)
+    try:
+        import fastparquet  # noqa: F401
+        logger.debug("PyArrow failed (%s), trying fastparquet for %s", last_error, file_path)
+        return _read("fastparquet")
+    except ImportError:
+        pass
+    except Exception as fp_err:
+        last_error = fp_err
+
+    # Last resort: full file with fastparquet then slice
+    if columns:
+        try:
+            import fastparquet  # noqa: F401
+            full = _read("fastparquet", cols=None)
+            missing = [c for c in columns if c not in full.columns]
+            if not missing:
+                return full[columns].copy()
+        except ImportError:
+            pass
+        except Exception:
+            pass
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Failed to read parquet")
 
 
 def normalize_to_common_schema(df: pd.DataFrame) -> pd.DataFrame:
@@ -273,9 +334,13 @@ def process_single_file(
     df: Optional[pd.DataFrame] = None
     normalized: Optional[pd.DataFrame] = None
     try:
-        cols = _read_parquet_schema(file_path, anon=anon)
-        dt_col = find_pickup_datetime_col(cols)
-        loc_col = find_pickup_location_col(cols)
+        try:
+            cols = _read_parquet_schema(file_path, anon=anon)
+        except Exception:
+            # Schema read can fail (e.g. codec on metadata); still try full file read below
+            cols = []
+        dt_col = find_pickup_datetime_col(cols) if cols else None
+        loc_col = find_pickup_location_col(cols) if cols else None
         if dt_col is not None and loc_col is not None:
             if partition_size_bytes and partition_size_bytes > 0:
                 # Batched path: read in chunks to bound memory (uses partition_optimization size)
@@ -405,9 +470,13 @@ def process_single_file(
                 )
                 normalized = normalized[[CANONICAL_DATETIME_COL, CANONICAL_LOCATION_COL]]
     except Exception as e:
-        logger.exception("Failed to read %s: %s", file_path, e)
         result["error"] = str(e)
         result["parse_failures"] = 1  # whole file
+        # Log read errors (e.g. GZipCodec / corrupted file) without full traceback
+        if isinstance(e, OSError) or "GZipCodec" in str(e) or "incorrect data check" in str(e):
+            logger.warning("Skipping unreadable file %s: %s", file_path, e)
+        else:
+            logger.exception("Failed to read %s: %s", file_path, e)
         return result
 
     result["input_rows"] = len(normalized)
@@ -661,13 +730,13 @@ def combine_into_wide_table(intermediate_paths: List[str]) -> pd.DataFrame:
     if isinstance(combined.index, pd.MultiIndex) and combined.index.names == ["taxi_type", "date", "pickup_place"]:
         combined = combined[hour_cols]
         wide = combined.groupby(
-            level=["taxi_type", "date", "pickup_place"], axis=0, sort=False
+            level=["taxi_type", "date", "pickup_place"], sort=False
         ).sum()
     else:
         key_cols = [c for c in combined.columns if c in ("taxi_type", "date", "pickup_place")]
         combined = combined[key_cols + hour_cols]
         wide = combined.groupby(
-            by=key_cols, axis=0, sort=False
+            by=key_cols, sort=False
         ).sum()
     wide = wide.astype(int)
 
@@ -699,11 +768,36 @@ def generate_report(
     peak_rss_bytes: int,
     run_time_seconds: float,
     report_path: str,
-    tex_path: Optional[str] = None,
+    json_path: Optional[str] = None,
+    files_failed: int = 0,
+    failed_files: Optional[List[Dict[str, str]]] = None,
+    time_discovery_seconds: float = 0.0,
+    time_processing_seconds: float = 0.0,
+    time_combine_output_seconds: float = 0.0,
+    workers_used: Optional[int] = None,
+    cpu_count: Optional[int] = None,
+    input_bytes: int = 0,
+    output_bytes: int = 0,
+    s3_output_uri: str = "",
 ) -> None:
     """
-    Write pipeline report to JSON/text file and optionally a .tex snippet.
+    Write pipeline report to a small .tex file (required). Optionally write JSON.
+    Includes resource utilization and run-time breakdown per assignment.
     """
+    peak_rss_mb = round(peak_rss_bytes / (1024 * 1024), 2)
+    run_time_minutes = round(run_time_seconds / 60, 2)
+    # Throughput (MB/s): input during processing, output during combine
+    input_throughput_mbs = (
+        (input_bytes / (1024 * 1024)) / time_processing_seconds
+        if time_processing_seconds > 0 and input_bytes > 0
+        else None
+    )
+    output_throughput_mbs = (
+        (output_bytes / (1024 * 1024)) / time_combine_output_seconds
+        if time_combine_output_seconds > 0 and output_bytes > 0
+        else None
+    )
+
     report = {
         "input_row_count": input_row_count,
         "output_row_count": output_row_count,
@@ -711,32 +805,64 @@ def generate_report(
         "month_mismatch_total": month_mismatch_total,
         "cleanup_removed_total": cleanup_removed_total,
         "parse_failures_total": parse_failures_total,
+        "files_failed": files_failed,
+        "failed_files": failed_files if failed_files is not None else [],
         "peak_rss_bytes": peak_rss_bytes,
-        "peak_rss_mb": round(peak_rss_bytes / (1024 * 1024), 2),
+        "peak_rss_mb": peak_rss_mb,
         "run_time_seconds": run_time_seconds,
-        "run_time_minutes": round(run_time_seconds / 60, 2),
+        "run_time_minutes": run_time_minutes,
+        "time_discovery_seconds": round(time_discovery_seconds, 2),
+        "time_processing_seconds": round(time_processing_seconds, 2),
+        "time_combine_output_seconds": round(time_combine_output_seconds, 2),
+        "workers_used": workers_used,
+        "cpu_count": cpu_count,
+        "input_bytes": input_bytes,
+        "output_bytes": output_bytes,
+        "input_throughput_mb_s": round(input_throughput_mbs, 2) if input_throughput_mbs is not None else None,
+        "output_throughput_mb_s": round(output_throughput_mbs, 2) if output_throughput_mbs is not None else None,
+        "s3_output_uri": s3_output_uri or None,
     }
 
+    # Required: output the report to a small tex file (with resource utilization & run-time breakdown)
     Path(report_path).parent.mkdir(parents=True, exist_ok=True)
     with open(report_path, "w") as f:
-        json.dump(report, f, indent=2)
+        f.write("% Pipeline report (auto-generated)\n")
+        f.write("% Includes: row counts, bad rows, memory, run time; resource utilization; run-time breakdown.\n\n")
+        f.write("\\textbf{Row counts \\& bad rows}\\\\\n")
+        f.write("\\begin{tabular}{ll}\n")
+        f.write("  Input row count & {}\\\\\n".format(input_row_count))
+        f.write("  Output row count & {}\\\\\n".format(output_row_count))
+        f.write("  Bad rows ignored & {}\\\\\n".format(bad_rows))
+        f.write("  Month mismatch total & {}\\\\\n".format(month_mismatch_total))
+        f.write("  Cleanup removed (< min rides) & {}\\\\\n".format(cleanup_removed_total))
+        f.write("  Parse failures & {}\\\\\n".format(parse_failures_total))
+        f.write("\\end{tabular}\\\\\n\n")
+        f.write("\\textbf{Resource utilization}\\\\\n")
+        f.write("\\begin{tabular}{ll}\n")
+        f.write("  Peak RSS (MB) & {:.2f}\\\\\n".format(peak_rss_mb))
+        f.write("  Workers used & {}\\\\\n".format(workers_used if workers_used is not None else "---"))
+        f.write("  CPU count & {}\\\\\n".format(cpu_count if cpu_count is not None else "---"))
+        if input_throughput_mbs is not None:
+            f.write("  Input throughput (MB/s) & {:.2f}\\\\\n".format(input_throughput_mbs))
+        if output_throughput_mbs is not None:
+            f.write("  Output throughput (MB/s) & {:.2f}\\\\\n".format(output_throughput_mbs))
+        if s3_output_uri:
+            f.write("  S3 output & {}\\\\\n".format(s3_output_uri.replace("_", "\\_")))
+        f.write("\\end{tabular}\\\\\n\n")
+        f.write("\\textbf{Run-time analysis (seconds)}\\\\\n")
+        f.write("\\begin{tabular}{ll}\n")
+        f.write("  Wall time (total) & {:.2f}\\\\\n".format(run_time_seconds))
+        f.write("  File discovery & {:.2f}\\\\\n".format(time_discovery_seconds))
+        f.write("  Per-month file processing & {:.2f}\\\\\n".format(time_processing_seconds))
+        f.write("  Combine \\& output & {:.2f}\\\\\n".format(time_combine_output_seconds))
+        f.write("\\end{tabular}\n")
     logger.info("Report written to %s", report_path)
 
-    if tex_path:
-        Path(tex_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(tex_path, "w") as f:
-            f.write("% Pipeline report (auto-generated)\n")
-            f.write("\\begin{tabular}{ll}\n")
-            f.write("  Input row count & {}\\\\\n".format(input_row_count))
-            f.write("  Output row count & {}\\\\\n".format(output_row_count))
-            f.write("  Bad rows ignored & {}\\\\\n".format(bad_rows))
-            f.write("  Month mismatch total & {}\\\\\n".format(month_mismatch_total))
-            f.write("  Cleanup removed (< min rides) & {}\\\\\n".format(cleanup_removed_total))
-            f.write("  Parse failures & {}\\\\\n".format(parse_failures_total))
-            f.write("  Peak RSS (MB) & {:.2f}\\\\\n".format(report["peak_rss_mb"]))
-            f.write("  Run time (seconds) & {:.2f}\\\\\n".format(run_time_seconds))
-            f.write("\\end{tabular}\n")
-        logger.info("TeX report snippet written to %s", tex_path)
+    if json_path:
+        Path(json_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(json_path, "w") as f:
+            json.dump(report, f, indent=2)
+        logger.info("JSON report written to %s", json_path)
 
 
 def run_partition_optimization(
@@ -843,19 +969,19 @@ def main() -> int:
         "--s3-output",
         type=str,
         default=None,
-        help="S3 URI for final wide table (e.g. s3://bucket/prefix/wide.parquet)",
+        help="S3 URI for final wide table (e.g. s3://291-s3-bucket/wide.parquet). On EC2, set env DSC291_S3_OUTPUT to upload without passing this.",
     )
     parser.add_argument(
         "--report-output",
         type=str,
         default=None,
-        help="Path for JSON report (default: <output-dir>/report.json)",
+        help="Path for report output: .tex (required) or .json (default: <output-dir>/report.tex)",
     )
     parser.add_argument(
-        "--report-tex",
+        "--report-json",
         type=str,
         default=None,
-        help="Optional path for .tex report snippet",
+        help="Optional path for JSON report (default: none); use for machine-readable stats",
     )
     parser.add_argument(
         "--max-memory-usage",
@@ -887,9 +1013,12 @@ def main() -> int:
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    # Default report path: inside output_dir so it's next to wide_table.parquet
+    # Default report: assignment requires "output the report to a small tex file"
     if args.report_output is None:
-        args.report_output = str(output_dir / "report.json")
+        args.report_output = str(output_dir / "report.tex")
+    # S3 upload: on EC2 set env DSC291_S3_OUTPUT=s3://291-s3-bucket/wide.parquet or pass --s3-output
+    if args.s3_output is None:
+        args.s3_output = os.environ.get("DSC291_S3_OUTPUT", DEFAULT_S3_OUTPUT)
 
     # S3: anonymous by default; use credentials if --no-s3-anon (required for nyc-tlc)
     s3_anon = not args.no_s3_anon
@@ -951,6 +1080,7 @@ def main() -> int:
         return 0
 
     logger.info("Discovered %d Parquet file(s)", len(files))
+    time_discovery_seconds = time.perf_counter() - wall_start
 
     # 2. Check schemas
     logger.info("Step 2/7: Checking schemas (sampling files)...")
@@ -1002,6 +1132,9 @@ def main() -> int:
     total_files = sum(len(by_month[k]) for k in month_keys)
     logger.info("Grouped into %d month(s), %d total file(s)", len(month_keys), total_files)
 
+    t_processing_start = time.perf_counter()
+    workers_used = args.workers  # may be overridden in parallel_files branch
+
     all_results: List[Dict[str, Any]] = []
     total_input_rows = 0
     total_output_rows_before_combine = 0
@@ -1015,6 +1148,7 @@ def main() -> int:
         # Process ALL files in one pool (many months in parallel)
         tasks = flatten_files_by_month(by_month, output_dir, month_keys=month_keys)
         n_workers = min(max_concurrent, len(tasks))
+        workers_used = n_workers
         logger.info(
             "Processing %d files in one pool with %d workers (--parallel-files)",
             len(tasks),
@@ -1077,6 +1211,7 @@ def main() -> int:
             total_input_rows,
             len(intermediate_paths),
         )
+        time_processing_seconds = time.perf_counter() - t_processing_start
     else:
         # Original: process one month at a time with --workers per month
         try:
@@ -1120,12 +1255,15 @@ def main() -> int:
             if month_total > 0:
                 logger.info("Month %s: %d row(s) with month mismatch", month_key, month_total)
 
+        time_processing_seconds = time.perf_counter() - t_processing_start
+
     logger.info(
         "Month-mismatch total: %d (across all files)",
         total_month_mismatch,
     )
 
     # 5. Combine into single wide table
+    t_combine_start = time.perf_counter()
     logger.info("Step 5/7: Combining intermediates into wide table...")
     wide = combine_into_wide_table(intermediate_paths)
     final_path = output_dir / "wide_table.parquet"
@@ -1142,6 +1280,9 @@ def main() -> int:
             upload_to_s3(str(final_path), args.s3_output)
         except Exception as e:
             logger.exception("S3 upload failed: %s", e)
+
+    time_combine_output_seconds = time.perf_counter() - t_combine_start
+    output_bytes = final_path.stat().st_size if final_path.exists() else 0
 
     # 7. Clean intermediates unless --keep-intermediate
     if not args.keep_intermediate:
@@ -1163,12 +1304,40 @@ def main() -> int:
     # 8. Report
     wall_elapsed = time.perf_counter() - wall_start
     peak_rss = _get_peak_rss_bytes()
+    # Best-effort total input size for throughput (S3/local)
+    input_bytes = 0
+    try:
+        for fp in files:
+            try:
+                input_bytes += get_file_size(fp, anon=s3_anon)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    cpu_count = os.cpu_count()
     logger.info(
         "Generating report (run_time=%.1fs, peak_rss=%.1f MB)...",
         wall_elapsed,
         peak_rss / (1024 * 1024),
     )
     bad_rows = total_parse_failures + total_cleanup_removed  # month mismatch is informational, not "dropped"
+    failed_results = [r for r in all_results if r.get("error")]
+    files_failed = len(failed_results)
+    failed_files_list = [
+        {"file_path": r.get("file_path", ""), "error": r.get("error", "")}
+        for r in failed_results
+    ]
+    if files_failed:
+        logger.info("Skipped %d file(s) (unreadable or error)", files_failed)
+    # Always write failed_files.json (empty list if none)
+    failed_path = output_dir / "failed_files.json"
+    try:
+        with open(failed_path, "w") as f:
+            json.dump(failed_files_list, f, indent=2)
+        if files_failed:
+            logger.info("Wrote failed file list to %s", failed_path)
+    except Exception as e:
+        logger.warning("Could not write failed_files.json: %s", e)
     generate_report(
         input_row_count=total_input_rows,
         output_row_count=len(wide),
@@ -1179,10 +1348,20 @@ def main() -> int:
         peak_rss_bytes=peak_rss,
         run_time_seconds=wall_elapsed,
         report_path=args.report_output,
-        tex_path=args.report_tex,
+        json_path=args.report_json,
+        files_failed=files_failed,
+        failed_files=failed_files_list,
+        time_discovery_seconds=time_discovery_seconds,
+        time_processing_seconds=time_processing_seconds,
+        time_combine_output_seconds=time_combine_output_seconds,
+        workers_used=workers_used,
+        cpu_count=cpu_count,
+        input_bytes=input_bytes,
+        output_bytes=output_bytes,
+        s3_output_uri=args.s3_output or "",
     )
 
-    report_path_final = args.report_output  # set above (default output_dir/report.json)
+    report_path_final = args.report_output  # set above (default output_dir/report.tex)
     logger.info(
         "Pipeline complete in %.1f min. Wide table: %s | Report: %s",
         wall_elapsed / 60.0,

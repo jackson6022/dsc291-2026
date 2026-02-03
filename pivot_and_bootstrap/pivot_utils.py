@@ -66,6 +66,9 @@ PICKUP_LOCATION_VARIANTS = [
 TAXI_TYPE_PATH_PATTERNS = [
     ("yellow", re.compile(r"yellow[\W_]trip", re.IGNORECASE)),
     ("green", re.compile(r"green[\W_]trip", re.IGNORECASE)),
+    # FHVHV first (so fhvhv_trip / high_volume_for_hire match before fhv)
+    ("fhvhv", re.compile(r"fhvhv[\W_]trip|high_volume_for_hire", re.IGNORECASE)),
+    ("fhv", re.compile(r"fhv[\W_]trip|for_hire_vehicle", re.IGNORECASE)),
 ]
 
 # Year-month in path: 2023-01 or year=2023/month=01 (or month=01)
