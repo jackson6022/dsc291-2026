@@ -746,10 +746,11 @@ def combine_into_wide_table(intermediate_paths: List[str]) -> pd.DataFrame:
 
 
 def upload_to_s3(local_path: str, s3_path: str) -> None:
-    """Upload a local file to S3. Uses s3fs via pivot_utils.get_filesystem. Streams in chunks to avoid loading full file into memory."""
+    """Upload a local file to S3. Uses s3fs via pivot_utils.get_filesystem. Streams in chunks to avoid loading full file into memory. Requires AWS credentials (env vars, IAM role, or ~/.aws/credentials)."""
     import shutil
     from pivot_and_bootstrap.pivot_utils import get_filesystem, parse_s3_path
-    fs = get_filesystem(s3_path)
+    # Use authenticated access; anonymous S3 cannot perform multipart uploads.
+    fs = get_filesystem(s3_path, anon=False)
     bucket, key = parse_s3_path(s3_path)
     full_s3 = f"{bucket}/{key}"
     with open(local_path, "rb") as f:
