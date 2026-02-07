@@ -1,3 +1,57 @@
+
+## Part 1: Core Utilities
+
+The module notes that Part 1 focuses on the core utilities (column detection, path inference, pivoting, and cleanup), which form the basis of the NYC TLC taxi data pivoting pipeline.
+
+`pivot_utils.py` is a utility module for pivoting **NYC TLC (Taxi and Limousine Commission) taxi data**. It supports data discovery, column detection, and reshaping of trip-level records into a time-series format suitable for analysis.
+
+---
+
+## Core Utilities
+
+### Column Detection
+
+NYC TLC data uses different column names depending on the taxi type (yellow, green, FHV). These functions detect the correct columns in a DataFrame.
+
+| Function | Description |
+|----------|-------------|
+| `find_pickup_datetime_col(df)` | Finds the pickup datetime column. Supports `tpep_pickup_datetime` (yellow), `lpep_pickup_datetime` (green), or `pickup_datetime` (generic). Matching is case-insensitive. Raises `ValueError` if none is found. |
+| `find_pickup_location_col(df)` | Finds the pickup location column. Supports `PULocationID`, `pickup_location_id`, and similar variants. Falls back to dropoff location (`DOLocationID`) if pickup is not found. Raises `ValueError` if neither is found. |
+
+### Path Inference
+
+Many NYC TLC files encode taxi type and month in the file path (e.g., `yellow_tripdata_2023-01.parquet`). These functions extract that metadata from the path.
+
+| Function | Description |
+|----------|-------------|
+| `infer_taxi_type_from_path(file_path)` | Extracts taxi type from the path. Supports `yellow`, `green`, `fhv`, and `fhvhv`. Returns lowercase string or `None` if not inferrable. |
+| `infer_month_from_path(file_path)` | Extracts year and month from the path. Supports `YYYY-MM` (e.g., `2023-01`), `year=YYYY/month=MM` (partitioned), and `YYYY_MM`. Returns `(year, month)` tuple or `None`. |
+
+### Pivoting
+
+| Function | Description |
+|----------|-------------|
+| `pivot_counts_date_taxi_type_location(df)` | Pivots trip-level records into counts by (date × taxi_type × pickup_place × hour). Input needs a pickup datetime column, pickup location column, and `taxi_type`. Output has a MultiIndex `(taxi_type, date, pickup_place)` and columns `hour_0` through `hour_23`. Missing hours are filled with 0. |
+
+### Cleanup
+
+| Function | Description |
+|----------|-------------|
+| `cleanup_low_count_rows(df, min_rides=50)` | Removes rows with fewer than `min_rides` total rides (sum across hour columns). Returns a tuple of `(cleaned_df, stats)` where `stats` includes `rows_before`, `rows_after`, and `rows_dropped`. |
+
+---
+
+## Data Flow
+
+A typical pipeline might use these utilities as follows:
+
+1. **Load data** — Read parquet files into a DataFrame.
+2. **Infer metadata** — Use `infer_taxi_type_from_path()` and `infer_month_from_path()` to get taxi type and month from each file path.
+3. **Detect columns** — Use `find_pickup_datetime_col()` and `find_pickup_location_col()` to find the correct columns, then add `taxi_type` to the DataFrame.
+4. **Pivot** — Call `pivot_counts_date_taxi_type_location()` to reshape trip records into hourly counts.
+5. **Clean up** — Call `cleanup_low_count_rows()` to remove low-count rows before further analysis.
+
+---
 # DSC 291 - Part 2: S3 & File Discovery
 
 ## What Part 2 Asks For
