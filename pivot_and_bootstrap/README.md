@@ -10,7 +10,7 @@ Single script that turns taxi trip Parquet data (local or S3) into one **wide ta
 4. **Process by month** — For each month: read → normalize → pivot → drop rows with &lt; `--min-rides` → write intermediate Parquet. Counts rows where the row’s month ≠ file’s expected month.
 5. **Combine** — Reads all intermediates, aggregates by `(taxi_type, date, pickup_place)`, sums hour columns → one wide table.
 6. **Write** — Saves `wide_table.parquet` under `--output-dir`; optionally uploads to `--s3-output`.
-7. **Report** — Writes a small `.tex` report (required) with row counts, bad rows, peak RSS, run time, resource utilization, and run-time breakdown; optional JSON via `--report-json`.
+7. **Report** — Writes `performance.md` at runtime with runtime, memory, row counts, discard breakdown, date consistency, year/taxi breakdown, schema summary, and throughput metrics.
 
 ## Run
 
@@ -45,8 +45,7 @@ Edit these at the top of `pivot_all_files.py` to change behavior without passing
 | `--max-months` | — | Process only the first N months (e.g. `12`). Use with `--parallel-files 32` to finish in ~30 min on S3 instead of full history. |
 | `--keep-intermediate` | off | Keep `output-dir/intermediates/YYYY-MM/*.parquet` after combining. |
 | `--s3-output` | — | S3 URI to upload the final wide table (e.g. `s3://bucket/wide.parquet`). |
-| `--report-output` | `<output-dir>/report.tex` | Path for the report (default: small .tex file next to wide table). |
-| `--report-json` | — | Optional path for a JSON report (machine-readable). |
+| `--report-output` | `<output-dir>/performance.md` | Path for performance summary report. |
 | `--partition-size` | — | Optional partition size; requires `partition_optimization` module. |
 | `--skip-partition-optimization` | off | Do not run partition optimization. |
 | `--max-memory-usage` | — | Max memory for partition optimization (e.g. `4GB`). |
@@ -106,7 +105,7 @@ python pivot_all_files.py --parallel-files 32 --max-months 12
 
 - **Intermediates:** `{output-dir}/intermediates/YYYY-MM/<sanitized_filename>.parquet` (removed by default after combine).
 - **Final table:** `{output-dir}/wide_table.parquet`.
-- **Report:** Path from `--report-output` (default: `<output-dir>/report.tex`). Use `--report-json` for optional JSON.
+- **Report:** Path from `--report-output` (default: `<output-dir>/performance.md`).
 
 ## S3 notes
 

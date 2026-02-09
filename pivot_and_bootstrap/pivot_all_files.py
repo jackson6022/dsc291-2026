@@ -53,7 +53,7 @@ CANONICAL_LOCATION_COL = "pickup_location"
 # Default input/output paths (used when CLI args are not provided).
 # Edit these to run without passing --input-dir / --output-dir (e.g. on AWS).
 # -----------------------------------------------------------------------------
-DEFAULT_INPUT_DIR = "s3://dsc291-ucsd/taxi"
+DEFAULT_INPUT_DIR = "s3://dsc291-ucsd/taxi/Dataset/2023/yellow_taxi"
 DEFAULT_OUTPUT_DIR = "./pivot_and_bootstrap"
 # S3 upload for wide table (e.g. on EC2). Set env DSC291_S3_OUTPUT or use --s3-output.
 DEFAULT_S3_OUTPUT = "s3://291-s3-bucket/wide.parquet"
@@ -769,25 +769,43 @@ def generate_report(
     peak_rss_bytes: int,
     run_time_seconds: float,
     report_path: str,
-    json_path: Optional[str] = None,
     files_failed: int = 0,
     failed_files: Optional[List[Dict[str, str]]] = None,
+    total_files_attempted: int = 0,
     time_discovery_seconds: float = 0.0,
+    time_schema_partition_opt_seconds: float = 0.0,
     time_processing_seconds: float = 0.0,
+    time_combine_seconds: float = 0.0,
+    time_parquet_write_seconds: float = 0.0,
+    time_s3_upload_seconds: float = 0.0,
     time_combine_output_seconds: float = 0.0,
+    s3_upload_success: bool = False,
+    input_path: str = "",
+    s3_input_file_count: int = 0,
     workers_used: Optional[int] = None,
     cpu_count: Optional[int] = None,
     input_bytes: int = 0,
     output_bytes: int = 0,
     s3_output_uri: str = "",
+    discarded_percentage: float = 0.0,
+    discarded_by_reason: Optional[Dict[str, int]] = None,
+    files_with_mismatch_count: int = 0,
+    year_taxi_type_breakdown: Optional[Dict[str, int]] = None,
+    schema_summary: Optional[Dict[str, Any]] = None,
+    intermediate_row_count: int = 0,
 ) -> None:
     """
-    Write pipeline report to a small .tex file (required). Optionally write JSON.
-    Includes resource utilization and run-time breakdown per assignment.
+    Write comprehensive performance.md report at runtime.
+    Includes all metrics: runtime, memory, rows, discard breakdown, date consistency, etc.
     """
+    import datetime
+    
     peak_rss_mb = round(peak_rss_bytes / (1024 * 1024), 2)
+    peak_rss_gb = round(peak_rss_mb / 1024, 3)
     run_time_minutes = round(run_time_seconds / 60, 2)
-    # Throughput (MB/s): input during processing, output during combine
+    rows_retained = input_row_count - bad_rows
+    retention_percentage = (rows_retained / input_row_count * 100) if input_row_count > 0 else 0.0
+    
     input_throughput_mbs = (
         (input_bytes / (1024 * 1024)) / time_processing_seconds
         if time_processing_seconds > 0 and input_bytes > 0
@@ -798,72 +816,180 @@ def generate_report(
         if time_combine_output_seconds > 0 and output_bytes > 0
         else None
     )
+    
+    input_size_mb = round(input_bytes / (1024 * 1024), 2)
+    output_size_kb = round(output_bytes / 1024, 2)
+    compression_ratio = input_bytes / output_bytes if output_bytes > 0 else 0
 
-    report = {
-        "input_row_count": input_row_count,
-        "output_row_count": output_row_count,
-        "bad_rows_ignored": bad_rows,
-        "month_mismatch_total": month_mismatch_total,
-        "cleanup_removed_total": cleanup_removed_total,
-        "parse_failures_total": parse_failures_total,
-        "files_failed": files_failed,
-        "failed_files": failed_files if failed_files is not None else [],
-        "peak_rss_bytes": peak_rss_bytes,
-        "peak_rss_mb": peak_rss_mb,
-        "run_time_seconds": run_time_seconds,
-        "run_time_minutes": run_time_minutes,
-        "time_discovery_seconds": round(time_discovery_seconds, 2),
-        "time_processing_seconds": round(time_processing_seconds, 2),
-        "time_combine_output_seconds": round(time_combine_output_seconds, 2),
-        "workers_used": workers_used,
-        "cpu_count": cpu_count,
-        "input_bytes": input_bytes,
-        "output_bytes": output_bytes,
-        "input_throughput_mb_s": round(input_throughput_mbs, 2) if input_throughput_mbs is not None else None,
-        "output_throughput_mb_s": round(output_throughput_mbs, 2) if output_throughput_mbs is not None else None,
-        "s3_output_uri": s3_output_uri or None,
-    }
-
-    # Required: output the report to a small tex file (with resource utilization & run-time breakdown)
+    # Create performance.md report
     Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+    
     with open(report_path, "w") as f:
-        f.write("% Pipeline report (auto-generated)\n")
-        f.write("% Includes: row counts, bad rows, memory, run time; resource utilization; run-time breakdown.\n\n")
-        f.write("\\textbf{Row counts \\& bad rows}\\\\\n")
-        f.write("\\begin{tabular}{ll}\n")
-        f.write("  Input row count & {}\\\\\n".format(input_row_count))
-        f.write("  Output row count & {}\\\\\n".format(output_row_count))
-        f.write("  Bad rows ignored & {}\\\\\n".format(bad_rows))
-        f.write("  Month mismatch total & {}\\\\\n".format(month_mismatch_total))
-        f.write("  Cleanup removed (< min rides) & {}\\\\\n".format(cleanup_removed_total))
-        f.write("  Parse failures & {}\\\\\n".format(parse_failures_total))
-        f.write("\\end{tabular}\\\\\n\n")
-        f.write("\\textbf{Resource utilization}\\\\\n")
-        f.write("\\begin{tabular}{ll}\n")
-        f.write("  Peak RSS (MB) & {:.2f}\\\\\n".format(peak_rss_mb))
-        f.write("  Workers used & {}\\\\\n".format(workers_used if workers_used is not None else "---"))
-        f.write("  CPU count & {}\\\\\n".format(cpu_count if cpu_count is not None else "---"))
-        if input_throughput_mbs is not None:
-            f.write("  Input throughput (MB/s) & {:.2f}\\\\\n".format(input_throughput_mbs))
-        if output_throughput_mbs is not None:
-            f.write("  Output throughput (MB/s) & {:.2f}\\\\\n".format(output_throughput_mbs))
-        if s3_output_uri:
-            f.write("  S3 output & {}\\\\\n".format(s3_output_uri.replace("_", "\\_")))
-        f.write("\\end{tabular}\\\\\n\n")
-        f.write("\\textbf{Run-time analysis (seconds)}\\\\\n")
-        f.write("\\begin{tabular}{ll}\n")
-        f.write("  Wall time (total) & {:.2f}\\\\\n".format(run_time_seconds))
-        f.write("  File discovery & {:.2f}\\\\\n".format(time_discovery_seconds))
-        f.write("  Per-month file processing & {:.2f}\\\\\n".format(time_processing_seconds))
-        f.write("  Combine \\& output & {:.2f}\\\\\n".format(time_combine_output_seconds))
-        f.write("\\end{tabular}\n")
-    logger.info("Report written to %s", report_path)
+        f.write("# Pipeline Performance Summary\n\n")
+        f.write(f"**Generated:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"**Output Location:** `{s3_output_uri}`\n\n")
+        
+        # Runtime & Memory
+        f.write("## Runtime & Memory\n\n")
+        f.write("### Total Runtime\n")
+        f.write(f"- **Wall Clock Time:** {run_time_seconds:.2f} seconds ({run_time_minutes:.2f} minutes)\n")
+        f.write("- **Time Breakdown:**\n")
+        f.write(f"  - File Discovery: {time_discovery_seconds:.2f} seconds\n")
+        f.write(f"  - Schema Check & Partition Optimization: {time_schema_partition_opt_seconds:.2f} seconds\n")
+        f.write(f"  - Month-at-a-Time Processing (Parquet read, pivot, cleanup, intermediate write, month-mismatch counting): {time_processing_seconds:.2f} seconds\n")
+        f.write(f"  - Production of Single Wide Table (combine intermediates): {time_combine_seconds:.2f} seconds\n")
+        f.write(f"  - Parquet Processing/Output (write wide_table.parquet): {time_parquet_write_seconds:.2f} seconds\n")
+        if time_s3_upload_seconds > 0:
+            f.write(f"  - S3 Upload: {time_s3_upload_seconds:.2f} seconds\n")
+        f.write(f"  - **Total (Combine & Output):** {time_combine_output_seconds:.2f} seconds\n\n")
+        
+        f.write("### Peak Memory Usage\n")
+        f.write(f"- **Peak RSS:** {peak_rss_mb} MB ({peak_rss_gb} GB)\n\n")
 
-    if json_path:
-        Path(json_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(json_path, "w") as f:
-            json.dump(report, f, indent=2)
-        logger.info("JSON report written to %s", json_path)
+        # S3 Metrics (if S3 was used for input or output)
+        if input_path.startswith("s3://") or s3_output_uri:
+            f.write("## S3 Metrics\n\n")
+            if input_path.startswith("s3://"):
+                f.write("### S3 Input\n")
+                f.write(f"- **Input Path:** `{input_path}`\n")
+                f.write(f"- **Files Read from S3:** {s3_input_file_count}\n")
+                f.write(f"- **Input Size:** {input_size_mb} MB\n")
+                f.write(f"- **Input Throughput (read):** {input_throughput_mbs:.2f} MB/s\n" if input_throughput_mbs else "- **Input Throughput:** N/A\n")
+                f.write("\n")
+            if s3_output_uri:
+                f.write("### S3 Output\n")
+                f.write(f"- **Output URI:** `{s3_output_uri}`\n")
+                f.write(f"- **Upload Size:** {output_size_kb} KB ({round(output_bytes / (1024 * 1024), 3)} MB)\n")
+                f.write(f"- **Upload Time:** {time_s3_upload_seconds:.2f} seconds\n")
+                if time_s3_upload_seconds > 0 and output_bytes > 0:
+                    s3_upload_throughput_mbs = (output_bytes / (1024 * 1024)) / time_s3_upload_seconds
+                    f.write(f"- **Upload Throughput:** {s3_upload_throughput_mbs:.2f} MB/s\n")
+                f.write(f"- **Upload Status:** {'Success' if s3_upload_success else 'Failed or skipped'}\n")
+                f.write("\n")
+
+        # Input vs Output
+        f.write("## Input vs Output\n\n")
+        f.write("### Total Input Rows\n")
+        f.write(f"- **Total Rows Read:** {input_row_count:,}\n")
+        f.write(f"- **Input File Size:** {input_size_mb} MB\n\n")
+        
+        f.write("### Discarded Rows Summary\n")
+        f.write(f"- **Total Discarded:** {bad_rows:,} rows ({discarded_percentage:.2f}%)\n")
+        f.write(f"- **Percentage Skipped:** {discarded_percentage:.2f}%\n")
+        f.write(f"- **Rows Retained:** {rows_retained:,} ({retention_percentage:.2f}%)\n\n")
+        
+        f.write("### Output Row Counts\n\n")
+        f.write("#### Intermediate Pivoted Table\n")
+        f.write(f"- **Intermediate Rows:** {intermediate_row_count:,}\n")
+        f.write("- **Format:** (taxi_type, date, pickup_place, hour) aggregation\n\n")
+        
+        f.write("#### Final Aggregated / Wide Table\n")
+        f.write(f"- **Final Output Rows:** {output_row_count:,}\n")
+        f.write("- **Indexed By:** (taxi_type, date, pickup_place)\n")
+        f.write(f"- **File Size:** {output_size_kb} KB\n\n")
+        
+        # Discard Breakdown
+        f.write("## Discard Breakdown\n\n")
+        f.write("| Reason | Count | % of Input |\n")
+        f.write("|--------|-------|------------|\n")
+        if discarded_by_reason:
+            for reason, count in sorted(discarded_by_reason.items()):
+                pct = (count / input_row_count * 100) if input_row_count > 0 else 0
+                f.write(f"| {reason.replace('_', ' ').title()} | {count:,} | {pct:.2f}% |\n")
+        f.write(f"| **Total Discarded** | **{bad_rows:,}** | **{discarded_percentage:.2f}%** |\n\n")
+        
+        # Date Consistency Issues
+        f.write("## Date Consistency Issues\n\n")
+        f.write("### Inconsistent Rows\n")
+        f.write(f"- **Total Month-Mismatch Rows:** {month_mismatch_total:,}\n")
+        f.write("- **Definition:** Rows where pickup_datetime month ≠ file's expected month\n\n")
+        
+        f.write("### Files Affected\n")
+        f.write(f"- **Number of Files with Mismatches:** {files_with_mismatch_count:,}\n\n")
+        
+        # Row Breakdown by Year and Taxi Type
+        f.write("## Row Breakdown by Year and Taxi Type\n\n")
+        f.write("### Final Wide Table Distribution\n\n")
+        f.write("| Year | Taxi Type | Row Count | % of Total |\n")
+        f.write("|------|-----------|-----------|------------|\n")
+        if year_taxi_type_breakdown:
+            total_rows = sum(year_taxi_type_breakdown.values())
+            for key, count in sorted(year_taxi_type_breakdown.items()):
+                parts = key.split("_", 1)
+                year = parts[0] if len(parts) > 0 else "---"
+                taxi_type = parts[1] if len(parts) > 1 else "---"
+                pct = (count / total_rows * 100) if total_rows > 0 else 0
+                f.write(f"| {year} | {taxi_type} | {count:,} | {pct:.1f}% |\n")
+        f.write(f"| **Total** | | **{output_row_count:,}** | **100.0%** |\n\n")
+        
+        # Schema Summary
+        f.write("## Schema Summary\n\n")
+        f.write("### Output Table Structure\n\n")
+        
+        if schema_summary:
+            f.write(f"**Total Columns:** {schema_summary.get('total_columns', 0)}\n\n")
+            f.write("**Index Columns (3):**\n")
+            f.write("1. `taxi_type` - Type of taxi\n")
+            f.write("2. `date` - Date of trip (YYYY-MM-DD format)\n")
+            f.write("3. `pickup_place` - Pickup location / zone\n\n")
+            
+            f.write(f"**Value Columns ({schema_summary.get('total_columns', 0) - 3}):**\n")
+            f.write("Hour-based ride counts:\n")
+            columns = schema_summary.get('columns', [])
+            for col in columns:
+                if col.startswith('hour_'):
+                    hour = int(col.split('_')[1])
+                    start_time = f"{hour:02d}:00"
+                    f.write(f"- `{col}` - {start_time}\n")
+        f.write("\n")
+        
+        # Processing Performance
+        f.write("## Processing Performance\n\n")
+        f.write("### Throughput Metrics\n")
+        if input_throughput_mbs:
+            f.write(f"- **Input Throughput:** {input_throughput_mbs:.2f} MB/s\n")
+        if output_throughput_mbs:
+            f.write(f"- **Output Throughput:** {output_throughput_mbs:.2f} MB/s\n")
+        f.write(f"- **Compression Ratio:** {compression_ratio:.1f}×\n\n")
+        
+        f.write("### Resource Efficiency\n")
+        f.write(f"- **CPU Utilization:** {workers_used} workers out of {cpu_count or 0} cores\n")
+        f.write(f"- **Memory Usage:** {peak_rss_mb} MB (allocated)\n\n")
+        
+        # Summary Statistics
+        f.write("## Summary Statistics\n\n")
+        f.write("| Metric | Value |\n")
+        f.write("|--------|-------|\n")
+        f.write(f"| Total Files Attempted | {total_files_attempted} |\n")
+        f.write(f"| Files Succeeded | {total_files_attempted - files_failed} |\n")
+        f.write(f"| Files Failed | {files_failed} |\n")
+        f.write(f"| Total Input Rows | {input_row_count:,} |\n")
+        f.write(f"| Rows Discarded | {bad_rows:,} ({discarded_percentage:.2f}%) |\n")
+        f.write(f"| Intermediate Rows | {intermediate_row_count:,} |\n")
+        f.write(f"| Final Output Rows | {output_row_count:,} |\n")
+        f.write(f"| Output Columns | {schema_summary.get('total_columns', 0) if schema_summary else 0} |\n")
+        f.write(f"| Peak Memory (MB) | {peak_rss_mb} |\n")
+        f.write(f"| Total Runtime (sec) | {run_time_seconds:.2f} |\n")
+        f.write(f"| Total Runtime (min) | {run_time_minutes:.2f} |\n")
+        f.write(f"| Time: Discovery | {time_discovery_seconds:.2f} s |\n")
+        f.write(f"| Time: Schema & Partition Opt | {time_schema_partition_opt_seconds:.2f} s |\n")
+        f.write(f"| Time: Month-at-a-Time Processing | {time_processing_seconds:.2f} s |\n")
+        f.write(f"| Time: Combine Wide Table | {time_combine_seconds:.2f} s |\n")
+        f.write(f"| Time: Parquet Write | {time_parquet_write_seconds:.2f} s |\n")
+        f.write(f"| Time: S3 Upload | {time_s3_upload_seconds:.2f} s |\n")
+        f.write(f"| Parse Failures | {parse_failures_total:,} |\n")
+        f.write(f"| Month Mismatches | {month_mismatch_total:,} |\n")
+        f.write(f"| Files with Mismatches | {files_with_mismatch_count} |\n")
+        f.write(f"| Workers Used | {workers_used} |\n")
+        f.write(f"| Input File Size | {input_size_mb} MB |\n")
+        f.write(f"| Output File Size | {output_size_kb} KB |\n\n")
+        
+        f.write("## Conclusion\n\n")
+        f.write(f"Pipeline completed successfully. Processed {input_row_count:,} input rows ")
+        f.write(f"into {output_row_count:,} output rows with {discarded_percentage:.2f}% discard rate. ")
+        f.write(f"Total runtime: {run_time_minutes:.2f} minutes with peak memory: {peak_rss_mb} MB.\n")
+    
+    logger.info("Performance report written to %s", report_path)
 
 
 def run_partition_optimization(
@@ -976,13 +1102,7 @@ def main() -> int:
         "--report-output",
         type=str,
         default=None,
-        help="Path for report output: .tex (required) or .json (default: <output-dir>/report.tex)",
-    )
-    parser.add_argument(
-        "--report-json",
-        type=str,
-        default=None,
-        help="Optional path for JSON report (default: none); use for machine-readable stats",
+        help="Path for performance.md report (default: <output-dir>/performance.md)",
     )
     parser.add_argument(
         "--max-memory-usage",
@@ -1014,9 +1134,9 @@ def main() -> int:
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    # Default report: assignment requires "output the report to a small tex file"
+    # Default report: generate performance.md
     if args.report_output is None:
-        args.report_output = str(output_dir / "report.tex")
+        args.report_output = str(output_dir / "performance.md")
     # S3 upload: on EC2 set env DSC291_S3_OUTPUT=s3://291-s3-bucket/wide.parquet or pass --s3-output
     if args.s3_output is None:
         args.s3_output = os.environ.get("DSC291_S3_OUTPUT", DEFAULT_S3_OUTPUT)
@@ -1082,6 +1202,7 @@ def main() -> int:
 
     logger.info("Discovered %d Parquet file(s)", len(files))
     time_discovery_seconds = time.perf_counter() - wall_start
+    t_after_discovery = time.perf_counter()
 
     # 2. Check schemas
     logger.info("Step 2/7: Checking schemas (sampling files)...")
@@ -1118,6 +1239,7 @@ def main() -> int:
         logger.info("Using partition size %.1f MB for batched reads", partition_size_bytes / (1024 * 1024))
     else:
         logger.info("No partition size; reading full files per worker.")
+    time_schema_partition_opt_seconds = time.perf_counter() - t_after_discovery
 
     # 4. Group by month, process files
     logger.info("Step 4/7: Grouping by month and processing files...")
@@ -1144,6 +1266,7 @@ def main() -> int:
     total_parse_failures = 0
     intermediate_paths: List[str] = []
     max_concurrent = args.parallel_files
+    files_with_mismatch = set()  # Track unique files with month mismatches
 
     if max_concurrent is not None and max_concurrent > 0:
         # Process ALL files in one pool (many months in parallel)
@@ -1202,7 +1325,10 @@ def main() -> int:
         for r in all_results:
             total_input_rows += r.get("input_rows", 0)
             total_output_rows_before_combine += r.get("output_rows", 0)
-            total_month_mismatch += r.get("month_mismatch_count", 0)
+            mismatch_count = r.get("month_mismatch_count", 0)
+            total_month_mismatch += mismatch_count
+            if mismatch_count > 0:
+                files_with_mismatch.add(r.get("file_path", ""))
             total_cleanup_removed += r.get("cleanup_removed", 0)
             total_parse_failures += r.get("parse_failures", 0)
             if r.get("intermediate_path"):
@@ -1245,7 +1371,10 @@ def main() -> int:
             for r in results:
                 total_input_rows += r.get("input_rows", 0)
                 total_output_rows_before_combine += r.get("output_rows", 0)
-                total_month_mismatch += r.get("month_mismatch_count", 0)
+                mismatch_count = r.get("month_mismatch_count", 0)
+                total_month_mismatch += mismatch_count
+                if mismatch_count > 0:
+                    files_with_mismatch.add(r.get("file_path", ""))
                 total_cleanup_removed += r.get("cleanup_removed", 0)
                 total_parse_failures += r.get("parse_failures", 0)
                 if r.get("intermediate_path"):
@@ -1267,22 +1396,31 @@ def main() -> int:
     t_combine_start = time.perf_counter()
     logger.info("Step 5/7: Combining intermediates into wide table...")
     wide = combine_into_wide_table(intermediate_paths)
+    time_combine_seconds = time.perf_counter() - t_combine_start
+
     final_path = output_dir / "wide_table.parquet"
+    t_parquet_start = time.perf_counter()
     logger.info("Step 6/7: Writing final wide table to %s", final_path)
     wide.to_parquet(
         final_path, index=True, engine="pyarrow", compression="snappy"
     )
     logger.info("Wrote final wide table to %s (%d rows)", final_path, len(wide))
+    time_parquet_write_seconds = time.perf_counter() - t_parquet_start
 
     # 6. Upload to S3 if requested
+    time_s3_upload_seconds = 0.0
+    s3_upload_success = False
     if args.s3_output:
         logger.info("Uploading to S3: %s", args.s3_output)
+        t_s3_start = time.perf_counter()
         try:
             upload_to_s3(str(final_path), args.s3_output)
+            s3_upload_success = True
         except Exception as e:
-            logger.exception("S3 upload failed: %s", e)
+            logger.warning("S3 upload failed (continuing anyway): %s", type(e).__name__)
+        time_s3_upload_seconds = time.perf_counter() - t_s3_start
 
-    time_combine_output_seconds = time.perf_counter() - t_combine_start
+    time_combine_output_seconds = time_combine_seconds + time_parquet_write_seconds + time_s3_upload_seconds
     output_bytes = final_path.stat().st_size if final_path.exists() else 0
 
     # 7. Clean intermediates unless --keep-intermediate
@@ -1322,6 +1460,47 @@ def main() -> int:
         peak_rss / (1024 * 1024),
     )
     bad_rows = total_parse_failures + total_cleanup_removed  # month mismatch is informational, not "dropped"
+    
+    # Compute additional metrics for comprehensive reporting
+    discarded_rows = total_parse_failures + total_cleanup_removed
+    discarded_percentage = (discarded_rows / total_input_rows * 100) if total_input_rows > 0 else 0.0
+    
+    # Breakdown of discarded rows by reason
+    discarded_by_reason = {
+        "parse_failures": total_parse_failures,
+        "cleanup_removed_low_count": total_cleanup_removed,
+        "month_mismatch_informational": total_month_mismatch,  # informational, not dropped
+    }
+    
+    # Date consistency issues
+    files_with_mismatch_count = len(files_with_mismatch)
+    
+    # Compute row breakdown by year and taxi type from the final wide table
+    year_taxi_type_breakdown = {}
+    if len(wide) > 0:
+        # Group by year and taxi_type from the index
+        for idx in wide.index:
+            if isinstance(idx, tuple) and len(idx) >= 3:
+                taxi_type = idx[0]
+                date_val = idx[1]
+                # Extract year from date
+                try:
+                    year = date_val.year if hasattr(date_val, 'year') else int(str(date_val)[:4])
+                except Exception:
+                    year = 0
+                # Use string key for JSON compatibility
+                key = f"{year}_{taxi_type}"
+                year_taxi_type_breakdown[key] = year_taxi_type_breakdown.get(key, 0) + 1
+    
+    # Schema summary (index columns + value columns)
+    schema_columns = list(wide.columns) if len(wide) > 0 else [f"hour_{i}" for i in range(24)]
+    index_count = 3  # taxi_type, date, pickup_place
+    schema_summary = {
+        "total_columns": index_count + len(schema_columns),
+        "columns": schema_columns,
+        "index_names": list(wide.index.names) if hasattr(wide.index, 'names') else []
+    }
+    
     failed_results = [r for r in all_results if r.get("error")]
     files_failed = len(failed_results)
     failed_files_list = [
@@ -1330,15 +1509,7 @@ def main() -> int:
     ]
     if files_failed:
         logger.info("Skipped %d file(s) (unreadable or error)", files_failed)
-    # Always write failed_files.json (empty list if none)
-    failed_path = output_dir / "failed_files.json"
-    try:
-        with open(failed_path, "w") as f:
-            json.dump(failed_files_list, f, indent=2)
-        if files_failed:
-            logger.info("Wrote failed file list to %s", failed_path)
-    except Exception as e:
-        logger.warning("Could not write failed_files.json: %s", e)
+    total_files_attempted = len(all_results)
     generate_report(
         input_row_count=total_input_rows,
         output_row_count=len(wide),
@@ -1349,20 +1520,33 @@ def main() -> int:
         peak_rss_bytes=peak_rss,
         run_time_seconds=wall_elapsed,
         report_path=args.report_output,
-        json_path=args.report_json,
         files_failed=files_failed,
         failed_files=failed_files_list,
+        total_files_attempted=total_files_attempted,
         time_discovery_seconds=time_discovery_seconds,
+        time_schema_partition_opt_seconds=time_schema_partition_opt_seconds,
         time_processing_seconds=time_processing_seconds,
+        time_combine_seconds=time_combine_seconds,
+        time_parquet_write_seconds=time_parquet_write_seconds,
+        time_s3_upload_seconds=time_s3_upload_seconds,
         time_combine_output_seconds=time_combine_output_seconds,
+        s3_upload_success=s3_upload_success,
+        input_path=args.input_dir,
+        s3_input_file_count=len(files) if is_s3_path(args.input_dir) else 0,
         workers_used=workers_used,
         cpu_count=cpu_count,
         input_bytes=input_bytes,
         output_bytes=output_bytes,
         s3_output_uri=args.s3_output or "",
+        discarded_percentage=discarded_percentage,
+        discarded_by_reason=discarded_by_reason,
+        files_with_mismatch_count=files_with_mismatch_count,
+        year_taxi_type_breakdown=year_taxi_type_breakdown,
+        schema_summary=schema_summary,
+        intermediate_row_count=total_output_rows_before_combine,
     )
 
-    report_path_final = args.report_output  # set above (default output_dir/report.tex)
+    report_path_final = args.report_output  # performance.md (default: output_dir/performance.md)
     logger.info(
         "Pipeline complete in %.1f min. Wide table: %s | Report: %s",
         wall_elapsed / 60.0,
