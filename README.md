@@ -111,6 +111,7 @@ files = discover_parquet_files('s3://nyc-tlc/trip data/', anon=True)
 **Files**: `pivot_and_bootstrap/pivot_utils.py` (implementation), `pivot_and_bootstrap/test_pivot_utils.py` (tests).
 
 ---
+# Part 3 — `partition_optimization.py`
 ## What Part 3 Asks For
 
 From the assignment:
@@ -153,10 +154,6 @@ This allows the pipeline to scale to large datasets while keeping memory usage w
 
 ## Quick Usage
 
-```bash
-# Run tests (if included)
-python3 -m pytest pivot_and_bootstrap/test_partition_optimization.py -v
-```
 ```python
 from pivot_and_bootstrap.partition_optimization import (
     parse_size,
