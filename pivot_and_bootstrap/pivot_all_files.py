@@ -53,7 +53,7 @@ CANONICAL_LOCATION_COL = "pickup_location"
 # Default input/output paths (used when CLI args are not provided).
 # Edit these to run without passing --input-dir / --output-dir (e.g. on AWS).
 # -----------------------------------------------------------------------------
-DEFAULT_INPUT_DIR = "s3://dsc291-ucsd/taxi/Dataset/2023/yellow_taxi"
+DEFAULT_INPUT_DIR = "s3://dsc291-ucsd/taxi"
 DEFAULT_OUTPUT_DIR = "./pivot_and_bootstrap"
 # S3 upload for wide table (e.g. on EC2). Set env DSC291_S3_OUTPUT or use --s3-output.
 DEFAULT_S3_OUTPUT = "s3://291-s3-bucket/wide.parquet"

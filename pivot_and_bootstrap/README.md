@@ -109,6 +109,7 @@ python pivot_all_files.py --parallel-files 32 --max-months 12
 
 ## S3 notes
 
+- **S3 location of the single Parquet (wide) table:** `s3://291-s3-bucket/wide.parquet` (default; override with `--s3-output` or env `DSC291_S3_OUTPUT`).
 - **Public buckets** (e.g. `s3://dsc291-ucsd/...`, `s3://dask-data/...`): no flags; anonymous access is used.
 - **NYC TLC** (`s3://nyc-tlc/trip data/`): use `--no-s3-anon` and configure AWS (`aws configure` or env vars). If credentials are missing, the script tries anonymous and may then hit 403.
 - Quote paths with spaces: `"--input-dir \"s3://nyc-tlc/trip data/\""`.
