@@ -111,6 +111,67 @@ files = discover_parquet_files('s3://nyc-tlc/trip data/', anon=True)
 **Files**: `pivot_and_bootstrap/pivot_utils.py` (implementation), `pivot_and_bootstrap/test_pivot_utils.py` (tests).
 
 ---
+# Part 3 — `partition_optimization.py`
+## What Part 3 Asks For
+
+From the assignment:
+
+- **`parse_size(size_str)`** — parse human-readable size strings such as `"200MB"` or `"1.5GB"` into bytes.
+- **`find_optimal_partition_size(...)`** — test candidate partition sizes (50MB–1GB), measure runtime and memory usage using PyArrow batching, and select the best size that stays within a specified memory limit.
+- Support both **local files and S3 paths**.
+- Use partitioning/batching to improve performance while avoiding out-of-memory errors.
+
+---
+
+## What This Code Does
+
+The code in `pivot_and_bootstrap/partition_optimization.py` implements a lightweight batch-size tuning step for reading large Parquet files with PyArrow.
+
+- **Size parsing**  
+  `parse_size(size_str)` converts strings like `"512KB"`, `"200MB"`, or `"1.5GB"` into byte counts. It is case-insensitive, allows optional whitespace, and validates units and values.
+
+- **Batch size benchmarking**  
+  `find_optimal_partition_size(...)` selects a representative Parquet file (local or `s3://`) and estimates an approximate bytes-per-row ratio from Parquet metadata. Using this estimate, it converts the assignment’s byte-range targets (default 50MB–1GB) into a small set of candidate **row-based batch sizes**.
+
+  Each candidate is tested by reading a few batches with `ParquetFile.iter_batches`, while measuring wall-clock time and peak resident memory usage (RSS). Candidates that exceed the configured memory limit are rejected, and among the remaining candidates the fastest option is selected. The final result is returned as an approximate batch size in bytes and logged for transparency.
+
+---
+
+## How It Is Used in the Pipeline
+
+Partition optimization is an **optional performance step** that runs before large-scale Parquet processing.
+
+In the main pipeline (Part 4), the flow is:
+
+1. Discover all Parquet files (Part 2).
+2. Optionally call `find_optimal_partition_size(...)` on a sample file to determine an efficient batch size.
+3. Use the selected batch size when reading Parquet files during month-by-month processing.
+4. Skip this step entirely if the user passes `--skip-partition-optimization`.
+
+This allows the pipeline to scale to large datasets while keeping memory usage within bounds and improving overall throughput.
+
+---
+
+## Quick Usage
+
+```python
+from pivot_and_bootstrap.partition_optimization import (
+    parse_size,
+    find_optimal_partition_size,
+)
+
+# Parse human-readable sizes
+parse_size("200MB")    # -> bytes
+parse_size("1.5GB")    # -> bytes
+
+# Find an optimal batch size for Parquet reads
+batch_bytes = find_optimal_partition_size(
+    parquet_paths="s3://nyc-tlc/trip-data/yellow_tripdata_2023-01.parquet",
+    max_memory_usage_mb=4096,
+)
+```
+**Files**: `pivot_and_bootstrap/partition_optimization.py` (implementation), `pivot_and_bootstrap/test_pivot_utils.py` (tests).
+
 
 # Part 4: Main Pipeline — `pivot_all_files.py`
 
