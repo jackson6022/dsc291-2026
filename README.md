@@ -1,3 +1,19 @@
+## What This Code Does
+
+The script `pivot_and_bootstrap/pivot_all_files.py` implements the full pipeline:
+
+1. **Discover** — Uses Part 2's `discover_parquet_files()` to get a sorted list of Parquet files (local or S3).
+2. **Schema check** — Samples files and normalizes to a common schema (pickup datetime, pickup location).
+3. **Group by month** — Infers `(year, month)` from path (e.g. `yellow_tripdata_2023-01.parquet` → 2023-01).
+4. **Process** — For each file (or in parallel via `--workers` or `--parallel-files`): read → normalize → aggregate by `(date, taxi_type, pickup_place, hour)` → pivot → drop rows with < `--min-rides` (default 50) → write intermediate Parquet. Counts and reports month-mismatch rows.
+5. **Combine** — Reads all intermediates, aggregates by `(taxi_type, date, pickup_place)`, sums hour columns → one wide table.
+6. **Write & S3** — Saves `wide_table.parquet` under `--output-dir`, then uploads to S3 (default or `DSC291_S3_OUTPUT` / `--s3-output`).
+7. **Report** — Writes `performance.md` (path via `--report-output`, default: `<output-dir>/performance.md`) with row counts, bad rows, peak RSS, run time, resource utilization, throughput metrics, discard breakdown, date consistency, year/taxi breakdown, and schema summary.
+
+**S3 location of the single Parquet (wide) table:** `s3://291-s3-bucket/wide.parquet`
+
+-----
+
 ## Part 1: Core Utilities
 
 The module notes that Part 1 focuses on the core utilities (column detection, path inference, pivoting, and cleanup), which form the basis of the NYC TLC taxi data pivoting pipeline.
@@ -185,21 +201,6 @@ From the assignment:
 - **Step 5 — Generate report**: Produce a **report** with: **input row count**, **output row count**, **bad rows ignored**, **memory use** (e.g. peak RSS), and **run time** (wall-clock). Output to a small .tex file (and optional JSON).
 - **CLI `main()`**: `--input-dir`, `--output-dir`, `--min-rides` (default 50), `--workers`, `--partition-size` / `--skip-partition-optimization`, `--keep-intermediate`. Run discovery → group by month → (optional) partition optimization → **process one month at a time** (parallel within month) → **report month-mismatch counts** → **combine into single wide table** → **store as Parquet** → **upload to S3** → **generate report**. Use multiprocessing, tqdm, continue on per-file errors.
 
----
-
-## What This Code Does
-
-The script `pivot_and_bootstrap/pivot_all_files.py` implements the full pipeline:
-
-1. **Discover** — Uses Part 2's `discover_parquet_files()` to get a sorted list of Parquet files (local or S3).
-2. **Schema check** — Samples files and normalizes to a common schema (pickup datetime, pickup location).
-3. **Group by month** — Infers `(year, month)` from path (e.g. `yellow_tripdata_2023-01.parquet` → 2023-01).
-4. **Process** — For each file (or in parallel via `--workers` or `--parallel-files`): read → normalize → aggregate by `(date, taxi_type, pickup_place, hour)` → pivot → drop rows with < `--min-rides` (default 50) → write intermediate Parquet. Counts and reports month-mismatch rows.
-5. **Combine** — Reads all intermediates, aggregates by `(taxi_type, date, pickup_place)`, sums hour columns → one wide table.
-6. **Write & S3** — Saves `wide_table.parquet` under `--output-dir`, then uploads to S3 (default or `DSC291_S3_OUTPUT` / `--s3-output`).
-7. **Report** — Writes `performance.md` (path via `--report-output`, default: `<output-dir>/performance.md`) with row counts, bad rows, peak RSS, run time, resource utilization, throughput metrics, discard breakdown, date consistency, year/taxi breakdown, and schema summary.
-
-**S3 location of the single Parquet (wide) table:** `s3://291-s3-bucket/wide.parquet`
 
 ---
 
