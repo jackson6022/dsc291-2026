@@ -1,4 +1,3 @@
-
 ## Part 1: Core Utilities
 
 The module notes that Part 1 focuses on the core utilities (column detection, path inference, pivoting, and cleanup), which form the basis of the NYC TLC taxi data pivoting pipeline.
@@ -198,7 +197,7 @@ The script `pivot_and_bootstrap/pivot_all_files.py` implements the full pipeline
 4. **Process** — For each file (or in parallel via `--workers` or `--parallel-files`): read → normalize → aggregate by `(date, taxi_type, pickup_place, hour)` → pivot → drop rows with < `--min-rides` (default 50) → write intermediate Parquet. Counts and reports month-mismatch rows.
 5. **Combine** — Reads all intermediates, aggregates by `(taxi_type, date, pickup_place)`, sums hour columns → one wide table.
 6. **Write & S3** — Saves `wide_table.parquet` under `--output-dir`, then uploads to S3 (default or `DSC291_S3_OUTPUT` / `--s3-output`).
-7. **Report** — Writes `report.tex` (and optional `--report-json`) with row counts, bad rows, peak RSS, run time, resource utilization, and run-time breakdown.
+7. **Report** — Writes `performance.md` (path via `--report-output`, default: `<output-dir>/performance.md`) with row counts, bad rows, peak RSS, run time, resource utilization, throughput metrics, discard breakdown, date consistency, year/taxi breakdown, and schema summary.
 
 **S3 location of the single Parquet (wide) table:** `s3://291-s3-bucket/wide.parquet`
 
@@ -217,224 +216,16 @@ python pivot_and_bootstrap/pivot_all_files.py --parallel-files 8
 python pivot_and_bootstrap/pivot_all_files.py --input-dir /data/parquet --output-dir ./out --s3-output s3://my-bucket/wide.parquet
 ```
 
-**Files**: `pivot_and_bootstrap/pivot_all_files.py` (main pipeline), `pivot_and_bootstrap/pivot_utils.py` (Part 1 & 2), `pivot_and_bootstrap/partition_optimization.py` (optional). See `pivot_and_bootstrap/README.md` for full CLI options and examples.
+**Files**: `pivot_and_bootstrap/pivot_all_files.py` (main pipeline), `pivot_and_bootstrap/pivot_utils.py` (Part 1 & 2), `pivot_and_bootstrap/partition_optimization.py` (optional). Run `python pivot_and_bootstrap/pivot_all_files.py --help` for full CLI options.
 
 ---
 
-# Part 5: Testing
+## Troubleshooting
 
-## Overview
-
-The test suite validates all core functionality of the NYC TLC taxi data pivoting pipeline (Part 5 of Homework Assignment 1).
-
-**Test file**: `pivot_and_bootstrap/test_pivot_date_location_hour.py` (30+ test cases)
-
-## Test Coverage
-
-### 1. Column Detection Tests (`TestColumnDetection`)
-Tests for finding pickup datetime, location, and taxi type from various column name formats:
-- Standard variants: `tpep_pickup_datetime`, `lpep_pickup_datetime`, `PULocationID`
-- Case-insensitive matching
-- Error handling for missing columns
-- Fallback behavior (e.g., using dropoff location if pickup not found)
-- Taxi type inference from paths: yellow, green, fhv, fhvhv
-
-### 2. Month Inference Tests (`TestMonthInference`)
-Tests for extracting year and month from file paths:
-- Hyphenated format: `yellow_tripdata_2023-01.parquet` → `(2023, 1)`
-- Partitioned format: `year=2023/month=01/data.parquet` → `(2023, 1)`
-- Underscore format: `yellow_2023_01_data.parquet` → `(2023, 1)`
-- Handling non-inferrable paths
-
-### 3. Pivot Function Tests (`TestPivotFunction`)
-Tests for pivoting trip data into time-series format:
-- Correct multi-index structure: `(taxi_type, date, pickup_place)`
-- All 24 hour columns present: `hour_0` through `hour_23`
-- Missing hours filled with 0
-- Correct aggregation of counts
-- Multiple dates and taxi types handled correctly
-
-### 4. Cleanup Tests (`TestCleanupLowCount`)
-Tests for removing rows with low ride counts:
-- Rows with < 50 rides removed
-- Rows with exactly 50 rides kept
-- Statistics returned (rows before/after, rows dropped)
-- Different thresholds tested
-- Multi-index structure preserved
-
-### 5. Error Handling Tests (`TestErrorHandling`)
-Tests for graceful error handling:
-- Missing required columns
-- Null/invalid datetime values
-- Invalid location IDs (negative numbers)
-- Empty DataFrames
-
-### 6. Month Mismatch Tests (`TestMonthMismatch`)
-Tests for counting date inconsistencies:
-- Rows where parsed date month ≠ file month
-- Cases with no mismatches
-
-### 7. Integration Test (`TestIntegration`)
-End-to-end test with sample Parquet file:
-- Create sample data
-- Write to Parquet
-- Read back and process
-- Test all functions in sequence
-- Verify final output
-
-## Running the Tests
-
-### Prerequisites
-
-Install required packages:
-
-```bash
-pip install pytest pandas numpy pyarrow
-```
-
-### Running All Tests
-
-```bash
-# From the pivot_and_bootstrap directory
-pytest test_pivot_date_location_hour.py -v
-
-# Or with more detailed output
-pytest test_pivot_date_location_hour.py -v --tb=short
-
-# Or run from the file directly
-python test_pivot_date_location_hour.py
-```
-
-### Running Specific Test Classes
-
-```bash
-# Test only column detection
-pytest test_pivot_date_location_hour.py::TestColumnDetection -v
-
-# Test only pivot function
-pytest test_pivot_date_location_hour.py::TestPivotFunction -v
-
-# Test only cleanup
-pytest test_pivot_date_location_hour.py::TestCleanupLowCount -v
-```
-
-### Running Specific Tests
-
-```bash
-# Test a specific function
-pytest test_pivot_date_location_hour.py::TestColumnDetection::test_find_pickup_datetime_col_standard -v
-```
-
-## Expected Output
-
-When all tests pass, you should see:
-
-```
-test_pivot_date_location_hour.py::TestColumnDetection::test_find_pickup_datetime_col_standard PASSED
-test_pivot_date_location_hour.py::TestColumnDetection::test_find_pickup_datetime_col_case_insensitive PASSED
-test_pivot_date_location_hour.py::TestColumnDetection::test_find_pickup_location_col_standard PASSED
-...
-================================ 30 passed in 2.5s ================================
-```
-
----
-
-# Setup and Usage
-
-## Installation
-
-```bash
-# Clone repository
-git clone <repository-url>
-cd dsc291-2026
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-## Running the Pipeline
-
-```bash
-# From repo root — defaults: input s3://dsc291-ucsd/taxi, output ./pivot_and_bootstrap, upload to s3://291-s3-bucket/wide.parquet
-python pivot_and_bootstrap/pivot_all_files.py
-
-# With 8 workers (e.g. on r8i.4xlarge)
-python pivot_and_bootstrap/pivot_all_files.py --parallel-files 8
-
-# Override paths
-python pivot_and_bootstrap/pivot_all_files.py --input-dir /data/parquet --output-dir ./out --s3-output s3://my-bucket/wide.parquet
-```
-
-## CLI Arguments
-
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `--input-dir` | Path to input Parquet files (local or S3) | `s3://dsc291-ucsd/taxi` |
-| `--output-dir` | Directory for output files | `./pivot_and_bootstrap` |
-| `--s3-output` | S3 path for final wide table | `s3://291-s3-bucket/wide.parquet` |
-| `--min-rides` | Minimum rides threshold (discard rows below this) | `50` |
-| `--parallel-files` / `--workers` | Number of parallel workers | `4` |
-| `--partition-size` | Manual partition size (e.g., `200MB`) | Auto-optimized |
-| `--skip-partition-optimization` | Skip partition size optimization | False |
-| `--keep-intermediate` | Keep intermediate monthly Parquet files | False |
-| `--report-json` | Output JSON report in addition to .tex | False |
-
----
-
-# Troubleshooting
-
-## Common Issues
-
-### Out of Memory Errors
-- Reduce `--parallel-files` to use fewer workers
-- Enable partition optimization (don't use `--skip-partition-optimization`)
-- Process smaller batches by reducing `--partition-size`
-
-### S3 Access Errors
-- Ensure AWS credentials are configured: `aws configure`
-- For public buckets, anonymous access is enabled by default
-- Set environment variable: `export AWS_PROFILE=<your-profile>`
-
-### Missing Columns
-- The pipeline auto-detects column name variants (case-insensitive)
-- Supports: `tpep_pickup_datetime`, `lpep_pickup_datetime`, `pickup_datetime`
-- Supports: `PULocationID`, `pickup_location_id`, `DOLocationID` (fallback)
-
-### Date/Month Mismatches
-- Pipeline reports month-mismatch counts automatically
-- Check logs for per-file breakdown
-- Rows with incorrect months are processed but counted as mismatches
-
----
-
-# Output and Deliverables
-
-## S3 Storage
-
-**Final wide table location:** `s3://291-s3-bucket/wide.parquet`
-
-This Parquet file contains the complete aggregated dataset:
-- **Index**: `(taxi_type, date, pickup_place)`
-- **Columns**: `hour_0` through `hour_23` (pickup counts by hour)
-- **Filtering**: Only rows with ≥ 50 total rides (across all hours)
-
-## Generated Files
-
-| File | Description |
-|------|-------------|
-| `wide_table.parquet` | Final aggregated wide table (all data) |
-| `report.tex` | Performance report (LaTeX format) |
-| `report.json` | Performance report (JSON format, if `--report-json` used) |
-| `intermediate/YYYY-MM/*.parquet` | Monthly intermediate files (if `--keep-intermediate`) |
-
-## Performance Report Contents
-
-The `report.tex` file includes:
-- **Total runtime** (wall-clock time)
-- **Peak memory usage** (MB/GB)
-- **Input row count** (total rows read)
-- **Output row count** (rows in final wide table)
-- **Discarded rows** (parse failures, <50 rides, etc.)
-- **Month-mismatch counts** (rows where date month ≠ file month)
-- **Resource utilization** (CPU cores, S3 throughput)
-- **Runtime breakdown** (by pipeline stage)
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| **S3 403 Forbidden** | NYC TLC (`s3://nyc-tlc/`) requires AWS credentials | Run `aws configure`, then use `--no-s3-anon` |
+| **ExpiredToken / NoCredentialsError** | Missing or invalid AWS credentials | Run `aws configure` or set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` |
+| **Out of memory** | Large files read at once | Use `--partition-size 200MB` or `--max-memory-usage 4GB`; enable partition optimization |
+| **Slow runs** | Limited parallelism | Use `--workers 8` or `--parallel-files 8` (e.g. on r8i.4xlarge) |
+| **No Parquet files found** | Wrong path or permissions | Check `--input-dir`; for S3, verify bucket/prefix and credentials |
