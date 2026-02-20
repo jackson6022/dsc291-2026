@@ -1,16 +1,16 @@
 {
-  "tail_type": "heavy",
-  "alpha": 5.118753808502896,
-  "alpha_r2": 0.9860481640266665,
+  "tail_type": "light",
+  "alpha": 5.1188,
+  "alpha_r2": 0.986,
   "n_coefficients": 576,
-  "statistics": {
-    "mean": 0.16231093122983703,
-    "std": 0.12378137287156649,
-    "min": 1.415309582727947e-05,
-    "max": 0.6700039586505895,
-    "median": 0.14237426420345917,
-    "skewness": 0.8086578396375144,
-    "kurtosis": 0.48531409384882895
+  "signed_statistics": {
+    "mean": 0.0057,
+    "std": 0.204,
+    "median": 0.0069,
+    "skewness": -0.1265,
+    "excess_kurtosis": -0.1465,
+    "shapiro_wilk_W": 0.9962,
+    "shapiro_wilk_p": 0.182
   },
-  "methodology": "Log-log regression on tail (top 10% of values) to estimate power-law exponent. Tail classified as heavy if R\u00b2 > 0.9 and alpha > 0, otherwise light."
+  "methodology": "Signed (raw) coefficients used for normality tests; absolute values used for log-log survival and power-law estimation. Tail classified as HEAVY only if BOTH conditions hold: (1) good power-law fit on |coefficients| (R2 > 0.9 and alpha > 0), AND (2) Q-Q deviation from normality (excess kurtosis > 0 OR Shapiro-Wilk p < 0.05). Here condition (2) fails (kurtosis = -0.15, Shapiro-Wilk p = 0.182), so the tail is classified as LIGHT."
 }
