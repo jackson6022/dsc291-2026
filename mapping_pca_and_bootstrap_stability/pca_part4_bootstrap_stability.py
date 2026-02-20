@@ -22,12 +22,20 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .pca_part1_unnormalized import (
-    WIDE_PARQUET_PATH,
-    HOUR_COLS,
-    load_and_extract_x,
-    fit_pca_dask,
-)
+try:
+    from .pca_part1_unnormalized import (
+        WIDE_PARQUET_PATH,
+        HOUR_COLS,
+        load_and_extract_x,
+        fit_pca_dask,
+    )
+except ImportError:
+    from pca_part1_unnormalized import (
+        WIDE_PARQUET_PATH,
+        HOUR_COLS,
+        load_and_extract_x,
+        fit_pca_dask,
+    )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -95,24 +103,25 @@ def component_wise_correlation(
     U: np.ndarray, V: np.ndarray
 ) -> np.ndarray:
     """
-    Compute component-wise Pearson correlation between corresponding
-    eigenvectors (columns of U and V).
+    Compute component-wise absolute Pearson correlation between
+    corresponding eigenvectors (columns of U and V).
 
-    Returns array of shape (K,) with correlation for each component.
+    Uses abs() to handle sign ambiguity: eigenvectors are only defined
+    up to sign, so v and -v are equivalent.
+
+    Returns array of shape (K,) with |correlation| for each component.
     """
     K = U.shape[1]
     corrs = np.empty(K, dtype=float)
     for k in range(K):
         u = U[:, k]
         v = V[:, k]
-        # Guard against zero-variance vectors
         if np.allclose(u, 0) or np.allclose(v, 0):
             corrs[k] = np.nan
             continue
         cov = np.cov(u, v)
-        # np.cov returns 2x2 matrix; off-diagonal is covariance
         denom = np.sqrt(cov[0, 0] * cov[1, 1])
-        corrs[k] = float(cov[0, 1] / denom) if denom > 0 else np.nan
+        corrs[k] = float(abs(cov[0, 1] / denom)) if denom > 0 else np.nan
     return corrs
 
 
@@ -159,10 +168,18 @@ def bootstrap_pca_stability(
     for b in range(B):
         idx = rng.integers(low=0, high=n, size=n)
         X_boot = X_arr[idx, :]
-        cov_boot = (X_boot.T @ X_boot) / X_boot.shape[0]
+        boot_mean = X_boot.mean(axis=0)
+        X_boot_centered = X_boot - boot_mean
+        cov_boot = (X_boot_centered.T @ X_boot_centered) / X_boot_centered.shape[0]
         eigvals, eigvecs = np.linalg.eigh(cov_boot)
         order = np.argsort(eigvals)[::-1]
         eigvecs = eigvecs[:, order]
+
+        # Align signs: flip bootstrap eigenvector if it points
+        # opposite to the reference (dot product < 0)
+        for k in range(min(K, eigvecs.shape[1])):
+            if np.dot(eigvecs[:, k], U_ref[:, k]) < 0:
+                eigvecs[:, k] *= -1
 
         U_boot = eigvecs[:, :K]
 
@@ -425,7 +442,7 @@ def plot_eigenvector_stability(
         key = f"PC{k+1}"
         labels.append(key)
         data.append(comp_corrs[key].values)
-    bp = ax_box.boxplot(data, labels=labels, showmeans=True, patch_artist=True)
+    bp = ax_box.boxplot(data, tick_labels=labels, showmeans=True, patch_artist=True)
     for patch in bp["boxes"]:
         patch.set_facecolor("lightgreen")
         patch.set_alpha(0.7)

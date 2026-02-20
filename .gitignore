@@ -61,3 +61,9 @@ htmlcov/
 .env
 .env.local
 *.pem
+
+# Local pip installs
+.local_deps/
+
+# Word temp/lock files
+~$*.docx

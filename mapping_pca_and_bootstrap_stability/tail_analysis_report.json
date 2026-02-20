@@ -1,16 +1,30 @@
 {
-  "tail_type": "heavy",
-  "alpha": 5.118753808502896,
-  "alpha_r2": 0.9860481640266665,
+  "tail_type": "light",
+  "alpha": 5.11875380987915,
+  "alpha_r2": 0.9860481639358358,
   "n_coefficients": 576,
-  "statistics": {
-    "mean": 0.16231093122983703,
-    "std": 0.12378137287156649,
-    "min": 1.415309582727947e-05,
-    "max": 0.6700039586505895,
-    "median": 0.14237426420345917,
-    "skewness": 0.8086578396375144,
-    "kurtosis": 0.48531409384882895
+  "statistics_signed": {
+    "mean": 0.006726005023905129,
+    "std": 0.20401330231895431,
+    "min": -0.6700039586662718,
+    "max": 0.5961762304695551,
+    "median": -0.0003971466779672532,
+    "skewness": -0.003452359649714738,
+    "kurtosis": -0.160276477890811
   },
-  "methodology": "Log-log regression on tail (top 10% of values) to estimate power-law exponent. Tail classified as heavy if R\u00b2 > 0.9 and alpha > 0, otherwise light."
+  "statistics_absolute": {
+    "mean": 0.16231093122238352,
+    "std": 0.12378137288134,
+    "min": 1.4153095258986202e-05,
+    "max": 0.6700039586662718,
+    "median": 0.14237426412844328,
+    "skewness": 0.8086578396300463,
+    "kurtosis": 0.4853140939426308
+  },
+  "qq_deviation": {
+    "excess_kurtosis": -0.160276477890811,
+    "shapiro_w": 0.9961564579832904,
+    "shapiro_p": 0.17608673134824118
+  },
+  "methodology": "Log-log regression on |coefficients| tail (top 10%) to estimate power-law exponent. Tail classified as heavy if R\u00b2 > 0.9, alpha > 0, AND Q-Q deviation from normality is detected (excess kurtosis > 0 or Shapiro-Wilk p < 0.05)."
 }

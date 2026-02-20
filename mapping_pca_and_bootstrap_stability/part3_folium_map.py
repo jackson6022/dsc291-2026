@@ -116,9 +116,11 @@ def _load_zone_coords_from_shapefile(
         gdf = gpd.read_file(shp_path, storage_options=storage_options)
     else:
         gdf = gpd.read_file(shp_path)
+    gdf_proj = gdf.to_crs("EPSG:2263")
+    centroids = gdf_proj.geometry.centroid.to_crs("EPSG:4326")
     gdf = gdf.to_crs("EPSG:4326")
-    gdf["lat"] = gdf.geometry.centroid.y
-    gdf["lon"] = gdf.geometry.centroid.x
+    gdf["lat"] = centroids.y
+    gdf["lon"] = centroids.x
     id_col = _infer_id_col([c for c in gdf.columns if c != "geometry"])
     if id_col is None:
         for c in gdf.columns:

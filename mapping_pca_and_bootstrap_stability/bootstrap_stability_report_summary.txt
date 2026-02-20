@@ -1,0 +1,44 @@
+================================================================================
+BOOTSTRAP STABILITY ANALYSIS SUMMARY
+================================================================================
+
+Dataset: 2,914,892 rows × 24 features
+Bootstrap replicates: 100
+Components analyzed: 2
+
+--------------------------------------------------------------------------------
+METRICS
+--------------------------------------------------------------------------------
+
+Subspace Affinity:
+  Mean: 0.999967 ± 0.000030
+  95% CI: [0.999899, 0.999995]
+  Range: [0.999858, 0.999998]
+  Interpretation: Excellent stability: subspace affinity = 0.999967 (very close to 1.0). The top-2 dimensional subspace is highly consistent across bootstrap replicates.
+
+Procrustes Distance:
+  Mean: 0.007348 ± 0.003357
+  95% CI: [0.003001, 0.014222]
+  Range: [0.002044, 0.016845]
+  Interpretation: Very stable alignment: Procrustes distance = 0.007348 ± 0.003357. Eigenvectors align almost perfectly after optimal rotation.
+
+Component-wise Correlations:
+  PC1:
+    Mean: 1.0000 ± 0.0000
+    95% CI: [0.9999, 1.0000]
+    Range: [0.9998, 1.0000]
+    Interpretation: Excellent: PC1 correlation = 1.0000 (95% CI: [0.9999, 1.0000]). This component is extremely stable across bootstraps.
+
+  PC2:
+    Mean: 1.0000 ± 0.0000
+    95% CI: [0.9999, 1.0000]
+    Range: [0.9999, 1.0000]
+    Interpretation: Excellent: PC2 correlation = 1.0000 (95% CI: [0.9999, 1.0000]). This component is extremely stable across bootstraps.
+
+--------------------------------------------------------------------------------
+OVERALL ASSESSMENT
+--------------------------------------------------------------------------------
+
+Overall: The PCA eigenvectors are highly stable. The results are robust to sampling variation and can be reliably used for downstream analysis.
+
+================================================================================

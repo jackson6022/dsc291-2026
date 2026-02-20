@@ -12,6 +12,7 @@ import pickle
 import logging
 from pathlib import Path
 
+import dask.array as da
 import dask.dataframe as dd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -56,34 +57,31 @@ def fit_pca_dask(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Fit PCA using Dask: impute NaN with column mean, then compute covariance
-    as the average of outer products in a single pass (sum of outer products, then divide by n once).
+    via Dask arrays -- sum of outer products divided by n once.
 
     Returns:
         components: orthonormal matrix (eigenvectors), shape (24, 24)
         variances: eigenvalues (explained variance), shape (24,)
     """
-    logger.info("Computing column means (excluding NaN)...")
+    logger.info("Computing column means (excluding NaN) via Dask...")
     means = column_means_excluding_nan(X)
-    means = means.compute()
-    logger.info("Converting to pandas to avoid dask_expr issues...")
-    # Workaround for dask_expr repartition bug: compute to pandas early
-    X_pd = X.compute()
-    logger.info("Filling NaN with column means and centering...")
-    X_filled = X_pd.fillna(means)
-    X_centered = X_filled - means
-    logger.info("Computing covariance matrix...")
-    n = len(X_centered)
-    X_arr = X_centered.values
-    # Covariance = (1/n) * X.T @ X
-    cov = (X_arr.T @ X_arr) / n
+    means_np = means.compute().values
+
+    logger.info("Imputing NaN and centering via Dask...")
+    X_filled = X.fillna(dict(zip(HOUR_COLS, means_np)))
+    X_centered = X_filled - means_np
+
+    logger.info("Computing covariance matrix via Dask (X^T @ X / n)...")
+    X_da = X_centered.to_dask_array(lengths=True)
+    n = X_da.shape[0]
+    cov = (X_da.T @ X_da) / n
+    cov = cov.compute()
     logger.info("Covariance shape %s, n = %s", cov.shape, n)
-    # Eigendecomposition of symmetric covariance matrix
+
     eigenvalues, eigenvectors = np.linalg.eigh(cov)
-    # eigh returns ascending order; PCA usually wants descending
     idx = np.argsort(eigenvalues)[::-1]
     variances = eigenvalues[idx]
     components = eigenvectors[:, idx]
-    # Orthonormal (eigh already gives unit vectors; re-normalize if needed)
     return components.astype(np.float64), variances.astype(np.float64)
 
 
