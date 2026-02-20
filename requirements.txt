@@ -17,6 +17,11 @@ matplotlib>=3.7.0
 # Statistical analysis (Part 2: tail analysis)
 scipy>=1.11.0
 
+# Mapping (HW2 Part 3)
+folium>=0.15.0
+branca>=0.8.0
+geopandas>=0.14.0
+
 # CLI and progress
 tqdm>=4.66.0
 
