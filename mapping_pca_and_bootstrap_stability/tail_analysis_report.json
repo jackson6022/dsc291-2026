@@ -1,0 +1,16 @@
+{
+  "tail_type": "heavy",
+  "alpha": 5.118753808502896,
+  "alpha_r2": 0.9860481640266665,
+  "n_coefficients": 576,
+  "statistics": {
+    "mean": 0.16231093122983703,
+    "std": 0.12378137287156649,
+    "min": 1.415309582727947e-05,
+    "max": 0.6700039586505895,
+    "median": 0.14237426420345917,
+    "skewness": 0.8086578396375144,
+    "kurtosis": 0.48531409384882895
+  },
+  "methodology": "Log-log regression on tail (top 10% of values) to estimate power-law exponent. Tail classified as heavy if R\u00b2 > 0.9 and alpha > 0, otherwise light."
+}
