@@ -35,25 +35,23 @@ def load_pca_model(model_path: str) -> tuple[np.ndarray, np.ndarray]:
     return model["components"], model["variances"]
 
 
-def pool_coefficients(components: np.ndarray, use_absolute: bool = True) -> np.ndarray:
+def pool_coefficients(components: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Pool all eigenvector loadings into a single 1D array.
+    Pool all eigenvector loadings into 1D arrays (signed and absolute).
 
     Args:
         components: (n_features, n_components) matrix where each column is an eigenvector
-        use_absolute: if True, take absolute values (typical for tail analysis)
 
     Returns:
-        pooled: 1D array of all coefficient values
+        signed: 1D array of all coefficient values (for Q-Q / histogram)
+        absolute: 1D array of |coefficient| values (for survival / alpha estimation)
     """
     logger.info("Pooling coefficients from components shape %s", components.shape)
-    pooled = components.flatten()
-    if use_absolute:
-        pooled = np.abs(pooled)
-    # Remove any NaN/inf values
-    pooled = pooled[np.isfinite(pooled)]
-    logger.info("Pooled %d coefficient values (absolute=%s)", len(pooled), use_absolute)
-    return pooled
+    signed = components.flatten()
+    signed = signed[np.isfinite(signed)]
+    absolute = np.abs(signed)
+    logger.info("Pooled %d coefficient values", len(signed))
+    return signed, absolute
 
 
 def compute_survival_function(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -126,122 +124,120 @@ def estimate_alpha_loglog(
     return alpha, r_squared
 
 
+def compute_qq_deviation(signed_coefficients: np.ndarray) -> dict:
+    """
+    Measure Q-Q deviation from normality using the Shapiro-Wilk test
+    and excess kurtosis.
+
+    Returns dict with test statistics useful for tail classification.
+    """
+    excess_kurtosis = float(stats.kurtosis(signed_coefficients))
+
+    n = len(signed_coefficients)
+    if n <= 5000:
+        sw_stat, sw_p = stats.shapiro(signed_coefficients)
+    else:
+        rng = np.random.default_rng(42)
+        sample = rng.choice(signed_coefficients, size=5000, replace=False)
+        sw_stat, sw_p = stats.shapiro(sample)
+
+    return {
+        "excess_kurtosis": excess_kurtosis,
+        "shapiro_w": float(sw_stat),
+        "shapiro_p": float(sw_p),
+    }
+
+
 def classify_tail(
     qq_stats: dict, alpha: float, r_squared: float, threshold_r2: float = 0.9
 ) -> str:
     """
     Classify tail as light (Gaussian-like) or heavy (power-law).
 
-    Criteria:
-    - Heavy tail if: Q-Q plot shows deviation AND log-log fit is good (R^2 > threshold)
-    - Light tail otherwise
-
-    Args:
-        qq_stats: statistics from Q-Q plot analysis
-        alpha: estimated power-law exponent
-        r_squared: goodness of fit for power-law
-        threshold_r2: minimum R^2 to consider power-law fit good
+    Criteria (both must hold for "heavy"):
+      1. Log-log power-law fit is good (R^2 >= threshold) and alpha > 0
+      2. Q-Q deviation from normality: excess kurtosis > 0 OR Shapiro-Wilk
+         rejects normality (p < 0.05)
 
     Returns:
         "heavy" or "light"
     """
-    # Check if log-log fit is good
-    good_powerlaw_fit = r_squared >= threshold_r2
+    good_powerlaw_fit = r_squared >= threshold_r2 and alpha > 0
 
-    # For now, use a simple heuristic: if R^2 is high, it's heavy tail
-    # In practice, you'd also check Q-Q plot deviation
-    if good_powerlaw_fit and alpha > 0:
+    qq_deviates = (
+        qq_stats.get("excess_kurtosis", 0) > 0
+        or qq_stats.get("shapiro_p", 1.0) < 0.05
+    )
+
+    if good_powerlaw_fit and qq_deviates:
         return "heavy"
-    else:
-        return "light"
+    return "light"
 
 
 def create_diagnostic_plots(
-    coefficients: np.ndarray,
+    signed: np.ndarray,
+    absolute: np.ndarray,
     alpha: float,
     r_squared: float,
     tail_type: str,
     output_path: str = "coefficient_distribution.png",
 ) -> None:
     """
-    Create three-panel diagnostic plot: histogram, Q-Q plot, log-log survival plot.
+    Create three-panel diagnostic plot.
 
-    Args:
-        coefficients: pooled coefficient values
-        alpha: estimated tail exponent
-        r_squared: R^2 of power-law fit
-        tail_type: "light" or "heavy"
-        output_path: path to save figure
+    Panels 1-2 (histogram, Q-Q) use *signed* coefficients so the normal
+    comparison is valid.  Panel 3 (log-log survival) uses *absolute* values
+    because tail exponent estimation requires positive data.
     """
     logger.info("Creating diagnostic plots")
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    # Panel 1: Histogram with Gaussian overlay
+    # Panel 1: Histogram of signed coefficients with Gaussian overlay
     ax1 = axes[0]
-    ax1.hist(coefficients, bins=50, density=True, alpha=0.7, edgecolor="black")
-
-    # Fit Gaussian and overlay
-    mu, sigma = coefficients.mean(), coefficients.std()
-    x_range = np.linspace(coefficients.min(), coefficients.max(), 100)
-    gaussian_pdf = stats.norm.pdf(x_range, mu, sigma)
-    ax1.plot(x_range, gaussian_pdf, "r-", linewidth=2, label=f"Gaussian fit\n(μ={mu:.3f}, σ={sigma:.3f})")
-
+    ax1.hist(signed, bins=50, density=True, alpha=0.7, edgecolor="black")
+    mu, sigma = signed.mean(), signed.std()
+    x_range = np.linspace(signed.min(), signed.max(), 200)
+    ax1.plot(x_range, stats.norm.pdf(x_range, mu, sigma), "r-", linewidth=2,
+             label=f"Gaussian fit\n(μ={mu:.3f}, σ={sigma:.3f})")
     ax1.set_xlabel("Coefficient value")
     ax1.set_ylabel("Density")
-    ax1.set_title("Histogram of PCA Coefficients")
+    ax1.set_title("Histogram of PCA Coefficients (signed)")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    # Panel 2: Q-Q plot
+    # Panel 2: Q-Q plot of signed coefficients vs normal
     ax2 = axes[1]
-    stats.probplot(coefficients, dist="norm", plot=ax2)
+    stats.probplot(signed, dist="norm", plot=ax2)
     ax2.set_title("Q-Q Plot (Normal)")
     ax2.grid(True, alpha=0.3)
 
-    # Panel 3: Log-Log Survival Plot
+    # Panel 3: Log-Log Survival of |coefficients|
     ax3 = axes[2]
-    x_vals, survival = compute_survival_function(coefficients)
-
-    # Remove zeros for log scale
+    x_vals, survival = compute_survival_function(absolute)
     mask = (x_vals > 0) & (survival > 0)
-    x_vals = x_vals[mask]
-    survival = survival[mask]
-
+    x_vals, survival = x_vals[mask], survival[mask]
     ax3.loglog(x_vals, survival, "b.", alpha=0.5, markersize=3, label="Empirical")
 
-    # Add fitted line if alpha is valid
     if not np.isnan(alpha) and alpha > 0:
-        # Fit line on tail portion (top 10%)
         tail_idx = int(len(x_vals) * 0.9)
         x_tail = x_vals[tail_idx:]
-
-        # Power law: P(X > x) = C * x^(-alpha)
-        # Fit C using the start of tail region
         if len(x_tail) > 0:
             log_C = np.log(survival[tail_idx]) + alpha * np.log(x_tail[0])
             fitted_survival = np.exp(log_C - alpha * np.log(x_tail))
-            ax3.loglog(
-                x_tail,
-                fitted_survival,
-                "r-",
-                linewidth=2,
-                label=f"Power law fit\n(α={alpha:.2f}, R²={r_squared:.3f})",
-            )
+            ax3.loglog(x_tail, fitted_survival, "r-", linewidth=2,
+                       label=f"Power law fit\n(α={alpha:.2f}, R²={r_squared:.3f})")
 
-    ax3.set_xlabel("Coefficient value (x)")
-    ax3.set_ylabel("P(X > x)")
-    ax3.set_title("Log-Log Survival Plot")
+    ax3.set_xlabel("|Coefficient| (x)")
+    ax3.set_ylabel("P(|X| > x)")
+    ax3.set_title("Log-Log Survival Plot (|coeff|)")
     ax3.legend()
     ax3.grid(True, alpha=0.3)
 
-    # Add overall title with classification
     fig.suptitle(
         f"PCA Coefficient Distribution Analysis (Tail: {tail_type.upper()})",
-        fontsize=14,
-        fontweight="bold",
+        fontsize=14, fontweight="bold",
     )
-
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
@@ -262,96 +258,74 @@ def compute_statistics(coefficients: np.ndarray) -> dict:
 
 
 def save_tail_analysis_report(
-    coefficients: np.ndarray,
+    signed: np.ndarray,
+    absolute: np.ndarray,
     tail_type: str,
     alpha: float,
     r_squared: float,
+    qq_stats: dict,
     output_path: str = "tail_analysis_report.json",
 ) -> None:
-    """
-    Save tail analysis report as JSON.
-
-    Args:
-        coefficients: pooled coefficient values
-        tail_type: "light" or "heavy"
-        alpha: estimated tail exponent
-        r_squared: R^2 of power-law fit
-        output_path: path to save JSON report
-    """
+    """Save tail analysis report as JSON."""
     logger.info("Saving tail analysis report")
 
     report = {
         "tail_type": tail_type,
         "alpha": float(alpha) if not np.isnan(alpha) else None,
         "alpha_r2": float(r_squared) if not np.isnan(r_squared) else None,
-        "n_coefficients": len(coefficients),
-        "statistics": compute_statistics(coefficients),
-        "methodology": "Log-log regression on tail (top 10% of values) to estimate power-law exponent. "
-                      "Tail classified as heavy if R² > 0.9 and alpha > 0, otherwise light.",
+        "n_coefficients": len(signed),
+        "statistics_signed": compute_statistics(signed),
+        "statistics_absolute": compute_statistics(absolute),
+        "qq_deviation": qq_stats,
+        "methodology": (
+            "Log-log regression on |coefficients| tail (top 10%) to estimate "
+            "power-law exponent. Tail classified as heavy if R² > 0.9, alpha > 0, "
+            "AND Q-Q deviation from normality is detected (excess kurtosis > 0 or "
+            "Shapiro-Wilk p < 0.05)."
+        ),
     }
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
-
     logger.info("Saved tail analysis report to %s", output_path)
 
 
 def main(
     model_path: str = "pca_model.pkl",
     output_dir: str = ".",
-    use_absolute: bool = True,
 ) -> None:
-    """
-    Main function for Part 2: tail analysis of PCA coefficients.
-
-    Args:
-        model_path: path to pca_model.pkl
-        output_dir: directory for outputs
-        use_absolute: whether to use absolute values of coefficients
-    """
+    """Main function for Part 2: tail analysis of PCA coefficients."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load PCA model
     components, variances = load_pca_model(model_path)
 
-    # Pool coefficients
-    coefficients = pool_coefficients(components, use_absolute=use_absolute)
+    signed, absolute = pool_coefficients(components)
 
-    # Estimate alpha via log-log regression
-    alpha, r_squared = estimate_alpha_loglog(coefficients, tail_percentile=90.0)
+    alpha, r_squared = estimate_alpha_loglog(absolute, tail_percentile=90.0)
 
-    # Classify tail type
-    qq_stats = {}  # Placeholder for Q-Q statistics
+    qq_stats = compute_qq_deviation(signed)
     tail_type = classify_tail(qq_stats, alpha, r_squared, threshold_r2=0.9)
 
-    # Create diagnostic plots
     create_diagnostic_plots(
-        coefficients,
-        alpha,
-        r_squared,
-        tail_type,
+        signed, absolute, alpha, r_squared, tail_type,
         output_path=str(output_dir / "coefficient_distribution.png"),
     )
 
-    # Save report
     save_tail_analysis_report(
-        coefficients,
-        tail_type,
-        alpha,
-        r_squared,
+        signed, absolute, tail_type, alpha, r_squared, qq_stats,
         output_path=str(output_dir / "tail_analysis_report.json"),
     )
 
-    # Print summary
     logger.info("=" * 60)
     logger.info("TAIL ANALYSIS SUMMARY")
     logger.info("=" * 60)
-    logger.info("Number of coefficients: %d", len(coefficients))
-    logger.info("Mean: %.4f, Std: %.4f", coefficients.mean(), coefficients.std())
+    logger.info("Coefficients: %d (signed range [%.4f, %.4f])",
+                len(signed), signed.min(), signed.max())
+    logger.info("Excess kurtosis: %.4f, Shapiro-Wilk p: %.4g",
+                qq_stats["excess_kurtosis"], qq_stats["shapiro_p"])
     logger.info("Tail type: %s", tail_type.upper())
     logger.info("Alpha (tail exponent): %.3f", alpha)
     logger.info("R² (power-law fit): %.3f", r_squared)
@@ -362,26 +336,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Part 2: Tail analysis of PCA coefficients")
-    parser.add_argument(
-        "--model",
-        default="pca_model.pkl",
-        help="Path to pca_model.pkl",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=".",
-        help="Directory for coefficient_distribution.png and tail_analysis_report.json",
-    )
-    parser.add_argument(
-        "--use-signed",
-        action="store_true",
-        help="Use signed coefficient values instead of absolute values",
-    )
-
+    parser.add_argument("--model", default="pca_model.pkl", help="Path to pca_model.pkl")
+    parser.add_argument("--output-dir", default=".", help="Output directory")
     args = parser.parse_args()
 
-    main(
-        model_path=args.model,
-        output_dir=args.output_dir,
-        use_absolute=not args.use_signed,
-    )
+    main(model_path=args.model, output_dir=args.output_dir)
