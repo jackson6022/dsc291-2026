@@ -22,3 +22,7 @@ fastparquet>=2024.1.0
 
 # Testing (optional)
 pytest>=7.4.0
+
+# Optional
+pytest-cov>=4.1.0
+pytest-sugar>=0.9.7
