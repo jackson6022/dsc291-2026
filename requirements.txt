@@ -28,6 +28,13 @@ tqdm>=4.66.0
 # Fallback for Parquet codec issues (e.g. GZipCodec failed); optional
 fastparquet>=2024.1.0
 
+# Machine learning (HW4)
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+
+# Environment variable loading (HW4)
+python-dotenv>=1.0.0
+
 # Testing (optional)
 pytest>=7.4.0
 
